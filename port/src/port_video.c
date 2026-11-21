@@ -448,6 +448,11 @@ void DEMOSwapBuffers(void) {
     if (g_headless_frames > 0 && g_frames >= g_headless_frames) {
         port_gx_finish();
         port_log("reached --frames %d, exiting", g_headless_frames);
+#ifdef PORT_VITA
+        /* not exit(): newlib's cleanup closes every FILE while the SDL audio
+         * thread still streams music from one (data abort in _lseek_r) */
+        sceKernelExitProcess(0);
+#endif
         exit(0);
     }
 }
