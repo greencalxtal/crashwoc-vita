@@ -97,7 +97,7 @@ void port_pace_lock_toggle(void) {
 }
 
 double port_frame_pacer(double measured_fps) {
-    static int mode = -1, n = 1, below;
+    static int mode = -1, n = 1, below, above;
     static uint64_t last;
     static double ema, owed;
     static const double fps_for_ticks[6] = { 60.0, 60.0, 40.0, 24.0, 16.0, 12.0 };
@@ -124,18 +124,31 @@ double port_frame_pacer(double measured_fps) {
         wait_last = g_port_wait_us;
         busy = work > waited ? work - waited : 0;
     }
+    if (g_pace_lock < 0) pace_lock_load();
+    /* With the frame lock on, a lone slow frame (a frame of 36 ms among frames
+     * of 30 ms) used to raise the fast-rising average past 2 vblanks and hold
+     * the game at 20 fps for 20+ frames. Now the average rises as slowly as it
+     * falls and the locked rate only drops after 3 frames in a row ask for it
+     * (or a jump of 2+ periods): a lone slow frame is just shown one vblank
+     * late. Without the lock n is not used for sleeping (unchanged). */
     if (ema == 0.0) ema = (double)busy;
-    else if ((double)busy > ema) ema += 0.3 * ((double)busy - ema);
+    else if ((double)busy > ema) ema += (g_pace_lock ? 0.1 : 0.3) * ((double)busy - ema);
     else ema += 0.1 * ((double)busy - ema);
     want = (int)((ema * 1.02 + 500.0) / period) + 1;
     if (want > 5) want = 5;
-    if (want > n) { n = want; below = 0; }
-    else if (want < n) { if (++below > 20) { n = want; below = 0; } }
-    else below = 0;
+    if (want > n) {
+        if (!g_pace_lock || want > n + 1 || ++above >= 3) { n = want; above = 0; }
+        below = 0;
+    } else if (want < n) {
+        above = 0;
+        if (++below > 20) { n = want; below = 0; }
+    } else {
+        below = 0;
+        above = 0;
+    }
     /* frame lock: sleeping to whole vblank multiples evens the display rhythm
      * but costs some throughput: opt-in (CWOC_PACESLEEP=1, or SELECT + D-pad
      * down on the Vita, saved in <save dir>/framelock.txt) */
-    if (g_pace_lock < 0) pace_lock_load();
     if (g_pace_lock && (double)work < n * period - 300.0)
         pace_sleep_us((uint64_t)(n * period - (double)work - 300.0));
     now = pace_now_us();
