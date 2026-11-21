@@ -352,6 +352,18 @@ static void prof_report(int nf, uint64_t span) {
             }
             n += snprintf(buf + n, sizeof(buf) - n, " idxcache %u/%u", g_idxc_hit / (unsigned)nf, g_idxc_miss / (unsigned)nf);
             g_idxc_hit = g_idxc_miss = 0;
+            {
+                extern uint64_t g_dsub[5];
+                extern int g_dsub_on;
+                static const char *dn[5] = {"prep", "lookup", "hitcopy", "miss", "tail"};
+                if (g_dsub_on > 0) {
+                    n += snprintf(buf + n, sizeof(buf) - n, " | dsub:");
+                    for (i = 0; i < 5; i++) {
+                        n += snprintf(buf + n, sizeof(buf) - n, " %s %.1f", dn[i], g_dsub[i] / 1000.0 / nf);
+                        g_dsub[i] = 0;
+                    }
+                }
+            }
             if (g_msub_on > 0) {
                 static const char *mn[8] = {"m3d", "mstate", "wmtx", "shsetup", "draw", "ot", "other", "item"};
                 n += snprintf(buf + n, sizeof(buf) - n, " | mtl:");

@@ -1793,7 +1793,10 @@ typedef struct {
  * just before the draw that uses them (CWOC_RTXF=0: transform on the game
  * thread as before) */
 typedef struct { int vfirst, count; unsigned epoch, ver; float m[3][4]; float q[3][3]; int skm; float one;
-                 const void *src; u32 col; int constcol; } XfSeg;
+                 const void *src; u32 col; int constcol;
+                 /* deferred index expansion (draw_indexed_range cache hit): the render
+                  * thread writes rel[0..rel_n) + ibase to the frame's index arena at ixa */
+                 const u16 *rel; u32 ixa, rel_n; u16 ibase; } XfSeg;
 /* GS layer source vertex (GS_DrawTriList / strip lists) */
 typedef struct { float x, y, z, nx, ny, nz; u32 diffuse; float u, v; } PortGSVertex;
 #define RQ_SEGS 16384
@@ -1829,6 +1832,8 @@ unsigned g_idxc_hit, g_idxc_miss;
 #define VSUB(k, rate) do { if (_pon_PROF_VERTS) g_vsub[k] += (port_prof_now() - _prof_t_PROF_VERTS) * (rate); } while (0)
 static size_t g_idxc_bytes;           /* index-list cache size (draw_indexed_range) */
 static void idxc_flush(void);
+static void idxc_free_done(void);
+static int g_idxc_nfree;             /* evicted index lists waiting to be freed */
 static int g_rt_seg[2];               /* render thread: segments transformed per frame buffer */
 static int g_rtxf = -1;               /* deferred transform on (CWOC_RTXF=0: off) */
 static int g_ncmd, g_nst, g_voff, g_ioff, g_npub_local; /* game thread counters for g_rf[g_pf] */
@@ -1968,6 +1973,7 @@ static void seg_add(int vfirst, int count) {
     sg->skm = -1;
     sg->one = 1.0f;
     sg->src = NULL;
+    sg->rel = NULL;
     for (r = 0; r < 3; r++) {
         for (c = 0; c < 4; c++) sg->m[r][c] = gx.posmtx[gx.cur_posmtx][r][c];
         for (c = 0; c < 3; c++) sg->q[r][c] = gx.nrmmtx[gx.cur_posmtx][r][c];
@@ -2284,6 +2290,28 @@ static void rt_copy_xf(const RFrame *fr, const XfSeg *sg) {
 #endif
 }
 
+/* render thread: indices of a cached list, relative to its lowest vertex,
+ * shifted to the segment's place in the batch (draw_indexed_range hit) */
+static void rt_expand_idx(RFrame *fr, const XfSeg *sg) {
+    const u16 *r = sg->rel;
+    u16 *ix = fr->ix + sg->ixa;
+    const u32 n = sg->rel_n;
+    const u16 b = sg->ibase;
+    u32 j = 0;
+#if defined(PORT_VITA) && defined(__ARM_NEON)
+    {
+        const uint16x8_t vb = vdupq_n_u16(b);
+        for (; j + 16 <= n; j += 16) {
+            __builtin_prefetch(r + j + 64, 0, 0);
+            vst1q_u16(ix + j, vaddq_u16(vld1q_u16(r + j), vb));
+            vst1q_u16(ix + j + 8, vaddq_u16(vld1q_u16(r + j + 8), vb));
+        }
+        for (; j + 8 <= n; j += 8) vst1q_u16(ix + j, vaddq_u16(vld1q_u16(r + j), vb));
+    }
+#endif
+    for (; j < n; j++) ix[j] = (u16)(r[j] + b);
+}
+
 /* render thread: view-transform the recorded segments that start below vend */
 static void rt_transform(int f, int vend) {
     RFrame *fr = &g_rf[f];
@@ -2295,6 +2323,7 @@ static void rt_transform(int f, int vend) {
         GLVertex *d = g_rt_out + sg->vfirst, *e = d + sg->count;
         rt_gap(fr, sg->vfirst);
         if (sg->vfirst + sg->count > g_rt_cov) g_rt_cov = sg->vfirst + sg->count;
+        if (sg->rel != NULL) rt_expand_idx(fr, sg);
         if (sg->skm >= 0 && sg->src != NULL) {
             rt_skin_src(fr, sg);
         } else if (sg->src != NULL) {
@@ -2478,6 +2507,7 @@ void port_gx_present(int frame) {
         PROF_END(PROF_WAIT);
         g_port_wait_us += port_prof_now() - w0;
     }
+    if (g_idxc_nfree) idxc_free_done();
     g_pf ^= 1;
     g_ncmd = g_nst = g_voff = g_ioff = g_npub_local = 0;
     g_nseg = 0;
@@ -2503,9 +2533,12 @@ int port_gx_render_threaded(void) { return g_rt_threaded; }
  * Game thread only (it owns the queue); a no-op elsewhere. */
 void port_gx_idle_for_load(void) {
     if (g_game_tid == 0 || SDL_ThreadID() != g_game_tid) return;
-    if (g_idxc_bytes) idxc_flush(); /* game memory may be reloaded */
-    if (!g_rt_threaded || !g_rtcopy) return;
+    if (!g_idxc_bytes && !g_idxc_nfree && (!g_rt_threaded || !g_rtcopy)) return;
+    /* emit the pending batch and let the render thread run everything: its
+     * segments read game memory (deferred copies) and cached index lists */
+    port_gx_flush();
     rq_sync();
+    if (g_idxc_bytes || g_idxc_nfree) idxc_flush(); /* game memory may be reloaded */
 }
 
 static void draw_block_inner(void);
@@ -2855,6 +2888,22 @@ static void direct_new_gen(void) {
     }
 }
 
+/* CWOC_DSUB=1: sampled sub-timers of port_gs_draw_indexed (one call in 8,
+ * scaled), reported with the 5 s perf lines: 0 state capture/compare
+ * (direct_prepare), 1 index-cache lookup, 2 segment + index copy on a hit,
+ * 3 range scan + conversion on a miss, 4 the rest (flush, bookkeeping) */
+uint64_t g_dsub[5];
+int g_dsub_on = -1;
+static int g_ds_live;
+static uint64_t g_ds_t;
+static inline void ds_mark(int k) {
+    if (g_ds_live) {
+        uint64_t now = port_prof_now();
+        g_dsub[k] += (now - g_ds_t) * 8;
+        g_ds_t = now;
+    }
+}
+
 /* port_gs_draw_indexed, deferred transform: when the call's indices cover a
  * compact range of the vertex array, convert that range sequentially (model
  * space, no tag table) and remap the indices; same triangles, same order.
@@ -2876,6 +2925,33 @@ typedef struct {
 static IdxCache g_idxc[IDXC_N];
 static int g_idxc_on = -1;
 
+/* lists evicted from the cache may still be read by the render thread
+ * (deferred index expansion of this or the previous frame): free them once
+ * the frame that evicted them has been executed (port_gx_present) */
+#define IDXC_FREE_N 1024
+static struct { u16 *p; int frame; } g_idxc_free[IDXC_FREE_N];
+static void rq_sync(void);
+static void idxc_flush(void);
+static void idxc_defer_free(u16 *p) {
+    if (p == NULL) return;
+    if (g_idxc_nfree == IDXC_FREE_N) {
+        port_gx_flush();
+        rq_sync();
+        while (g_idxc_nfree > 0) free(g_idxc_free[--g_idxc_nfree].p);
+    }
+    g_idxc_free[g_idxc_nfree].p = p;
+    g_idxc_free[g_idxc_nfree].frame = g_frames_sub;
+    g_idxc_nfree++;
+}
+static void idxc_free_done(void) {
+    int i, k = 0, done = g_frames_done;
+    for (i = 0; i < g_idxc_nfree; i++) {
+        if (g_idxc_free[i].frame < done) free(g_idxc_free[i].p);
+        else g_idxc_free[k++] = g_idxc_free[i];
+    }
+    g_idxc_nfree = k;
+}
+
 static void idxc_flush(void) {
     int i;
     for (i = 0; i < IDXC_N; i++) {
@@ -2884,6 +2960,7 @@ static void idxc_flush(void) {
         g_idxc[i].idx = NULL;
     }
     g_idxc_bytes = 0;
+    while (g_idxc_nfree > 0) free(g_idxc_free[--g_idxc_nfree].p);
 }
 
 static u32 idxc_sum(const short *idx, u32 count) {
@@ -2919,12 +2996,16 @@ static int draw_indexed_range(int strips, const short *idx, u32 count, const Por
             c->stamp = now;
             if (c->reject) return 0;
             if (c->rel != NULL) {
+                ds_mark(1);
                 const u16 *r = c->rel;
                 u32 n = c->nitot, j;
                 u16 b;
                 batch_reserve((int)c->range, (int)n);
                 base = g_bn;
                 {
+                    /* the render thread writes the indices (rt_expand_idx) just
+                     * before the draw that uses them: the list stays alive until
+                     * then (evicted lists are freed two frames later) */
                     XfSeg *sg;
                     g_seg_nomerge = 1;
                     seg_add(g_voff + base, (int)c->range);
@@ -2933,28 +3014,23 @@ static int draw_indexed_range(int strips, const short *idx, u32 count, const Por
                     sg->src = &vl[c->mn];
                     sg->constcol = constcol;
                     sg->col = col;
+                    sg->rel = r;
+                    sg->rel_n = n;
+                    sg->ixa = (u32)(g_bidx - g_rf[g_pf].ix) + (u32)g_bni;
+                    sg->ibase = (u16)base;
                 }
                 g_bn += (int)c->range;
-                ix = g_bidx + g_bni;
-                b = (u16)base;
-#if defined(PORT_VITA) && defined(__ARM_NEON)
-                {
-                    uint16x8_t vb = vdupq_n_u16(b);
-                    for (j = 0; j + 8 <= n; j += 8) vst1q_u16(ix + j, vaddq_u16(vld1q_u16(r + j), vb));
-                }
-#else
-                j = 0;
-#endif
-                for (; j < n; j++) ix[j] = (u16)(r[j] + b);
+                (void)ix; (void)b; (void)j;
                 g_bni += (int)n;
                 port_gx_stats_draw((int)c->range);
                 g_idxc_hit++;
+                ds_mark(2);
                 return 1;
             }
         }
         /* (re)fill this slot below */
         g_idxc_miss++;
-        free(c->rel);
+        idxc_defer_free(c->rel);
         if (c->rel) g_idxc_bytes -= c->nitot * 2;
         c->rel = NULL;
         c->idx = idx;
@@ -3066,6 +3142,7 @@ indices:
         }
     }
     g_bni += (int)nitot;
+    ds_mark(3);
     return 1;
 }
 
@@ -3083,15 +3160,25 @@ void port_gs_draw_indexed(int strips, const short *idx, u32 count, const void *v
     const int defer = g_rtxf;
     u32 epoch;
     PROF_BEGIN_S(PROF_VERTS, 4);
+    {
+        static unsigned dsc;
+        if (g_dsub_on < 0) g_dsub_on = getenv("CWOC_DSUB") != NULL;
+        g_ds_live = g_dsub_on && (++dsc & 7) == 0;
+        if (g_ds_live) g_ds_t = port_prof_now();
+    }
     direct_prepare();
     direct_new_gen();
+    ds_mark(0);
     epoch = g_batch_epoch;
     if (defer && draw_indexed_range(strips, idx, count, vl, constcol, col)) {
         if (!g_batch_on) port_gx_flush();
+        ds_mark(4);
+        g_ds_live = 0;
         VSUB(1, 4);
         PROF_END_S(PROF_VERTS, 4);
         return;
     }
+    g_ds_live = 0;
     {
     int jstart = g_bn;
     const void *idx0 = idx;
