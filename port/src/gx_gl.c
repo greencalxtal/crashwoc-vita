@@ -24,6 +24,7 @@
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/kernel/cpu.h>
 #include <arm_neon.h>
+#include <sys/stat.h>
 #endif
 #include <math.h>
 #include <stddef.h>
@@ -713,16 +714,136 @@ static ShaderEntry *get_shader_inner(void) {
 
 /* render thread: build the GL program of a shader entry on first use */
 /* program creation cost (render thread), reported with the 5 s perf lines:
- * programs created, ms in vertex / fragment compile and in link + lookups */
-unsigned g_shc_n;
-uint64_t g_shc_us[3];
+ * programs created, ms in vertex / fragment compile, link + lookups, and
+ * programs / ms restored from the binary cache */
+unsigned g_shc_n, g_shc_hit;
+uint64_t g_shc_us[4];
+
+#ifdef PORT_VITA
+/* Persistent program cache. vitaGL compiles GLSL in glLinkProgram (~550 ms a
+ * program on the render thread, every session: its own disk cache stays
+ * empty here). The first link of each program is saved with
+ * glGetProgramBinary (bound attributes + both GXP binaries) and later
+ * sessions restore it with glProgramBinary, which skips the compiler.
+ * Files are named by a hash of both sources and of the linked vitaGL
+ * (PORT_VITAGL_ID, CMake), so another vitaGL never loads stale binaries.
+ * CWOC_SHCACHE=0 disables it. */
+#define SHCACHE_DIR "ux0:data/crashwoc/shadercache"
+#define SHCACHE_MAGIC 0x31435743u /* "CWC1" */
+#ifndef PORT_VITAGL_ID
+#define PORT_VITAGL_ID "unknown"
+#endif
+static int g_shcache = -1;
+
+static unsigned long long fnv1a64(const char *s, unsigned long long h) {
+    while (*s) {
+        h ^= (unsigned char)*s++;
+        h *= 0x100000001b3ULL;
+    }
+    return h;
+}
+
+static void shcache_path(char *buf, size_t n, const ShaderEntry *e) {
+    const char *opt = getenv("CWOC_SHOPT"); /* compiler optimisation (port_video.c) */
+    unsigned long long h = fnv1a64(PORT_VITAGL_ID, 0xcbf29ce484222325ULL);
+    h = fnv1a64(opt && opt[0] >= '0' && opt[0] <= '4' ? opt : "", h);
+    h = fnv1a64("|", h);
+    h = fnv1a64(e->vsrc, h);
+    h = fnv1a64("|", h);
+    h = fnv1a64(e->fsrc, h);
+    snprintf(buf, n, SHCACHE_DIR "/%016llx.bin", h);
+}
+
+static int shcache_load(ShaderEntry *e, const char *path) {
+    u32 hdr[3]; /* magic, binary format, length */
+    void *data;
+    GLint ok = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    if (fread(hdr, sizeof(hdr), 1, f) != 1 || hdr[0] != SHCACHE_MAGIC || hdr[2] == 0 || hdr[2] > (1u << 20) ||
+        !(data = malloc(hdr[2]))) {
+        fclose(f);
+        remove(path);
+        return 0;
+    }
+    if (fread(data, hdr[2], 1, f) != 1) {
+        fclose(f);
+        free(data);
+        remove(path);
+        return 0;
+    }
+    fclose(f);
+    e->prog = glCreateProgram();
+    glProgramBinary(e->prog, (GLenum)hdr[1], data, (GLsizei)hdr[2]);
+    free(data);
+    glGetProgramiv(e->prog, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        port_log("gx: cached program %s rejected, compiling", path);
+        glDeleteProgram(e->prog);
+        e->prog = 0;
+        remove(path);
+        return 0;
+    }
+    return 1;
+}
+
+static void shcache_save(GLuint prog, const char *path) {
+    GLint len = 0;
+    GLsizei got = 0;
+    GLenum fmt = 0;
+    u32 *buf;
+    char tmp[300];
+    FILE *f;
+    glGetProgramiv(prog, GL_PROGRAM_BINARY_LENGTH, &len);
+    if (len <= 0 || len > (1 << 20)) return;
+    buf = malloc((size_t)len + 64 + 12); /* vitaGL writes without checking the size: some slack */
+    if (!buf) return;
+    glGetProgramBinary(prog, len, &got, &fmt, buf + 3);
+    if (got <= 0 || got > len) {
+        free(buf);
+        return;
+    }
+    buf[0] = SHCACHE_MAGIC;
+    buf[1] = (u32)fmt;
+    buf[2] = (u32)got;
+    snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+    f = fopen(tmp, "wb");
+    if (f) {
+        int good = fwrite(buf, 12 + (size_t)got, 1, f) == 1;
+        good &= fclose(f) == 0;
+        if (good) rename(tmp, path);
+        else remove(tmp);
+    }
+    free(buf);
+}
+#endif
 
 static void ensure_program(ShaderEntry *e) {
     GLuint v, f;
     int i;
     uint64_t t0, t1, t2;
+#ifdef PORT_VITA
+    char cpath[256];
+#endif
     if (e->prog) return;
     t0 = port_prof_now();
+#ifdef PORT_VITA
+    if (g_shcache < 0) {
+        const char *s = getenv("CWOC_SHCACHE");
+        g_shcache = !(s && s[0] == '0');
+        if (g_shcache) mkdir(SHCACHE_DIR, 0777);
+        port_log("gx: shader program cache %s (" SHCACHE_DIR ", vitaGL %s)", g_shcache ? "on" : "off", PORT_VITAGL_ID);
+    }
+    if (g_shcache) {
+        shcache_path(cpath, sizeof(cpath), e);
+        if (shcache_load(e, cpath)) {
+            t2 = port_prof_now();
+            g_shc_us[3] += t2 - t0;
+            g_shc_hit++;
+            goto lookups;
+        }
+    }
+#endif
     v = compile(GL_VERTEX_SHADER, e->vsrc);
     t1 = port_prof_now();
     f = compile(GL_FRAGMENT_SHADER, e->fsrc);
@@ -745,7 +866,16 @@ static void ensure_program(ShaderEntry *e) {
             glGetProgramInfoLog(e->prog, sizeof(log), NULL, log);
             port_log("gx: program link failed: %s", log);
         }
+#ifdef PORT_VITA
+        else if (g_shcache) shcache_save(e->prog, cpath);
+#endif
     }
+    g_shc_us[2] += port_prof_now() - t2;
+    g_shc_n++;
+    t2 = port_prof_now();
+#ifdef PORT_VITA
+lookups:
+#endif
     e->u_proj = glGetUniformLocation(e->prog, "u_proj");
     e->u_posmtx = glGetUniformLocation(e->prog, "u_posmtx");
     e->u_nrmmtx = glGetUniformLocation(e->prog, "u_nrmmtx");
@@ -762,7 +892,6 @@ static void ensure_program(ShaderEntry *e) {
         e->u_tex[i] = glGetUniformLocation(e->prog, nm);
     }
     g_shc_us[2] += port_prof_now() - t2;
-    g_shc_n++;
 }
 
 /* -------------------------------------------------------------- textures */

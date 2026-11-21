@@ -123,6 +123,16 @@ void port_platform_init(int argc, char **argv) {
         port_splash_hold(); /* keep the boot splash up for a moment */
     }
     vglInitExtended(0, w, h, 8 * 1024 * 1024, SCE_GXM_MULTISAMPLE_NONE); /* MSAA off: fill rate */
+    {
+        /* CWOC_SHOPT=0..4 (shark_opt O0, O1, O2, O3 = vitaGL default, Ofast):
+         * optimisation level of the runtime shader compiler, for weighing
+         * first-compile time against GPU cost (part of the program cache key) */
+        const char *o = getenv("CWOC_SHOPT");
+        if (o && o[0] >= '0' && o[0] <= '4') {
+            vglSetupRuntimeShaderCompiler((shark_opt)(o[0] - '0'), GL_TRUE, GL_FALSE, GL_TRUE);
+            port_log("video: shader compiler optimisation %c", o[0]);
+        }
+    }
 #else
     if (getenv("CWOC_WINSIZE")) sscanf(getenv("CWOC_WINSIZE"), "%dx%d", &w, &h); /* testing */
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
@@ -356,13 +366,14 @@ static void prof_report(int nf, uint64_t span) {
     }
     {
         /* shader programs created in this window (gx_gl.c ensure_program) */
-        extern unsigned g_shc_n;
-        extern uint64_t g_shc_us[3];
-        if (g_shc_n)
-            port_log("shaders: %u new programs, vs compile %.1f ms, fs compile %.1f ms, link %.1f ms", g_shc_n,
-                     g_shc_us[0] / 1000.0, g_shc_us[1] / 1000.0, g_shc_us[2] / 1000.0);
-        g_shc_n = 0;
-        g_shc_us[0] = g_shc_us[1] = g_shc_us[2] = 0;
+        extern unsigned g_shc_n, g_shc_hit;
+        extern uint64_t g_shc_us[4];
+        if (g_shc_n || g_shc_hit)
+            port_log("shaders: %u compiled (vs %.1f ms, fs %.1f ms, link+lookups %.1f ms), %u from cache (%.1f ms)",
+                     g_shc_n, g_shc_us[0] / 1000.0, g_shc_us[1] / 1000.0, g_shc_us[2] / 1000.0, g_shc_hit,
+                     g_shc_us[3] / 1000.0);
+        g_shc_n = g_shc_hit = 0;
+        g_shc_us[0] = g_shc_us[1] = g_shc_us[2] = g_shc_us[3] = 0;
     }
 }
 
