@@ -1796,7 +1796,9 @@ typedef struct { int vfirst, count; unsigned epoch, ver; float m[3][4]; float q[
                  const void *src; u32 col; int constcol;
                  /* deferred index expansion (draw_indexed_range cache hit): the render
                   * thread writes rel[0..rel_n) + ibase to the frame's index arena at ixa */
-                 const u16 *rel; u32 ixa, rel_n; u16 ibase; } XfSeg;
+                 const u16 *rel; u32 ixa, rel_n; u16 ibase;
+                 /* cached static skin list: source vertex of each slot (else skw[].sk) */
+                 const u16 *uniq; } XfSeg;
 /* GS layer source vertex (GS_DrawTriList / strip lists) */
 typedef struct { float x, y, z, nx, ny, nz; u32 diffuse; float u, v; } PortGSVertex;
 #define RQ_SEGS 16384
@@ -1834,6 +1836,7 @@ static size_t g_idxc_bytes;           /* index-list cache size (draw_indexed_ran
 static void idxc_flush(void);
 static void idxc_free_done(void);
 static int g_idxc_nfree;             /* evicted index lists waiting to be freed */
+static size_t g_skc_bytes;           /* skin list cache size (port_gs_skin_draw) */
 static int g_rt_seg[2];               /* render thread: segments transformed per frame buffer */
 static int g_rtxf = -1;               /* deferred transform on (CWOC_RTXF=0: off) */
 static int g_ncmd, g_nst, g_voff, g_ioff, g_npub_local; /* game thread counters for g_rf[g_pf] */
@@ -1974,6 +1977,7 @@ static void seg_add(int vfirst, int count) {
     sg->one = 1.0f;
     sg->src = NULL;
     sg->rel = NULL;
+    sg->uniq = NULL;
     for (r = 0; r < 3; r++) {
         for (c = 0; c < 4; c++) sg->m[r][c] = gx.posmtx[gx.cur_posmtx][r][c];
         for (c = 0; c < 3; c++) sg->q[r][c] = gx.nrmmtx[gx.cur_posmtx][r][c];
@@ -2189,8 +2193,9 @@ static void rt_skin_src(const RFrame *fr, const XfSeg *sg) {
     const u32 constcol = sg->col;
     GLVertex *d = fr->v + sg->vfirst, *e = d + sg->count;
     const SkinW *w = fr->skw + sg->vfirst;
+    const u16 *uq = sg->uniq;
     for (; d < e; d++, w++) {
-        const PortGSVertexSkinR *s = &sv[(short)w->sk];
+        const PortGSVertexSkinR *s = &sv[(short)(uq ? *uq++ : w->sk)];
         const float v0 = s->x, v1 = s->y, v2 = s->z;
         const float *m = mt + 16 * ((int)s->ix[0] & 15);
         float a0 = m[0] * v0 + m[1] * v1 + m[2] * v2 + m[3];
@@ -2610,12 +2615,12 @@ int port_gx_render_threaded(void) { return g_rt_threaded; }
  * Game thread only (it owns the queue); a no-op elsewhere. */
 void port_gx_idle_for_load(void) {
     if (g_game_tid == 0 || SDL_ThreadID() != g_game_tid) return;
-    if (!g_idxc_bytes && !g_idxc_nfree && (!g_rt_threaded || !g_rtcopy)) return;
+    if (!g_idxc_bytes && !g_skc_bytes && !g_idxc_nfree && (!g_rt_threaded || !g_rtcopy)) return;
     /* emit the pending batch and let the render thread run everything: its
      * segments read game memory (deferred copies) and cached index lists */
     port_gx_flush();
     rq_sync();
-    if (g_idxc_bytes || g_idxc_nfree) idxc_flush(); /* game memory may be reloaded */
+    if (g_idxc_bytes || g_skc_bytes || g_idxc_nfree) idxc_flush(); /* game memory may be reloaded */
 }
 
 static void draw_block_inner(void);
@@ -3002,6 +3007,23 @@ typedef struct {
 static IdxCache g_idxc[IDXC_N];
 static int g_idxc_on = -1;
 
+/* Static-source skin lists (port_gs_skin_draw without blend shapes): the
+ * slots a list dedups to depend only on the list, so cache, per list, the
+ * source vertex of each slot and the list in slots. A hit only records the
+ * segment; the render thread / worker reads the sources from the cache
+ * (rt_skin_src) and writes the indices (rt_expand_idx). Same validation,
+ * flushing and deferred freeing as the index cache. CWOC_SKINCACHE=0: off. */
+typedef struct {
+    const short *idx;
+    u32 n, chk, stamp;
+    u16 nuniq;
+    u16 *data; /* [nuniq] source vertices, then [n] slots */
+} SkinCache;
+#define SKC_N 4096
+static SkinCache g_skc[SKC_N];
+static int g_skc_on = -1;
+unsigned g_skc_hit, g_skc_miss;
+
 /* lists evicted from the cache may still be read by the render thread
  * (deferred index expansion of this or the previous frame): free them once
  * the frame that evicted them has been executed (port_gx_present) */
@@ -3037,6 +3059,12 @@ static void idxc_flush(void) {
         g_idxc[i].idx = NULL;
     }
     g_idxc_bytes = 0;
+    for (i = 0; i < SKC_N; i++) {
+        free(g_skc[i].data);
+        g_skc[i].data = NULL;
+        g_skc[i].idx = NULL;
+    }
+    g_skc_bytes = 0;
     while (g_idxc_nfree > 0) free(g_idxc_free[--g_idxc_nfree].p);
 }
 
@@ -3447,6 +3475,49 @@ void port_gs_skin_draw(int n, const short *idx, const void *srcverts, const void
             if (bs == NULL && g_rtcopy) {
                 /* static source: record the source index only (rt_skin_src) */
                 SkinW *skw = g_rf[g_pf].skw + g_voff;
+                SkinCache *sc = NULL;
+                const int base0 = g_bn;
+                if (g_skc_on < 0) g_skc_on = !(getenv("CWOC_SKINCACHE") && getenv("CWOC_SKINCACHE")[0] == '0');
+                if (g_skc_on && done == 0 && k == n && g_bn == segfirst - g_voff) {
+                    u32 chk = idxc_sum(idx, (u32)n);
+                    u32 h = (u32)(((uintptr_t)idx >> 1) * 2654435761u) >> 20;
+                    SkinCache *c0 = &g_skc[(h << 1) & (SKC_N - 1)], *c1 = c0 + 1;
+                    u32 now = (u32)port_frame_count();
+                    if (c1->idx == idx) sc = c1;
+                    else if (c0->idx == idx) sc = c0;
+                    else if (c0->idx == NULL) sc = c0;
+                    else if (c1->idx == NULL) sc = c1;
+                    else sc = (c0->stamp <= c1->stamp) ? c0 : c1;
+                    if (sc->idx == idx && sc->n == (u32)n && sc->chk == chk && sc->data != NULL) {
+                        XfSeg *sg;
+                        sc->stamp = now;
+                        seg_add_skin(segfirst, sc->nuniq, skm, one);
+                        sg = &g_rf[g_pf].seg[g_nseg - 1];
+                        sg->src = sv;
+                        sg->constcol = lit;
+                        sg->col = constcol;
+                        sg->uniq = sc->data;
+                        sg->rel = sc->data + sc->nuniq;
+                        sg->rel_n = (u32)k;
+                        sg->ixa = (u32)(g_bidx - g_rf[g_pf].ix) + (u32)g_bni;
+                        sg->ibase = (u16)base0;
+                        g_bn += sc->nuniq;
+                        g_bni += k;
+                        done += k;
+                        g_skc_hit++;
+                        port_gx_stats_draw(k);
+                        continue;
+                    }
+                    /* refill this slot after the scan below */
+                    g_skc_miss++;
+                    if (sc->data) g_skc_bytes -= ((size_t)sc->nuniq + sc->n) * 2;
+                    idxc_defer_free(sc->data);
+                    sc->data = NULL;
+                    sc->idx = idx;
+                    sc->n = (u32)n;
+                    sc->chk = chk;
+                    sc->stamp = now;
+                }
                 for (i = 0; i < k; i++) {
                     unsigned sk = (u16)idx[done + i];
                     if (g_rm_tag[sk] != g_rm_gen) {
@@ -3456,6 +3527,20 @@ void port_gs_skin_draw(int n, const short *idx, const void *srcverts, const void
                         ix[i] = (u16)g_bn++;
                     } else {
                         ix[i] = g_rm_idx[sk];
+                    }
+                }
+                if (sc != NULL) {
+                    u32 nu = (u32)(g_bn - base0), j;
+                    size_t bytes = ((size_t)nu + (size_t)k) * 2;
+                    u16 *data = (nu > 0 && g_skc_bytes + bytes <= (4u << 20)) ? malloc(bytes) : NULL;
+                    if (data) {
+                        for (j = 0; j < nu; j++) data[j] = skw[base0 + j].sk;
+                        for (j = 0; j < (u32)k; j++) data[nu + j] = (u16)(ix[j] - base0);
+                        sc->data = data;
+                        sc->nuniq = (u16)nu;
+                        g_skc_bytes += bytes;
+                    } else {
+                        sc->idx = NULL;
                     }
                 }
                 g_bni += k;

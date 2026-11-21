@@ -353,6 +353,11 @@ static void prof_report(int nf, uint64_t span) {
             n += snprintf(buf + n, sizeof(buf) - n, " idxcache %u/%u", g_idxc_hit / (unsigned)nf, g_idxc_miss / (unsigned)nf);
             g_idxc_hit = g_idxc_miss = 0;
             {
+                extern unsigned g_skc_hit, g_skc_miss;
+                n += snprintf(buf + n, sizeof(buf) - n, " skincache %u/%u", g_skc_hit / (unsigned)nf, g_skc_miss / (unsigned)nf);
+                g_skc_hit = g_skc_miss = 0;
+            }
+            {
                 extern uint64_t g_dsub[5];
                 extern int g_dsub_on;
                 static const char *dn[5] = {"prep", "lookup", "hitcopy", "miss", "tail"};
