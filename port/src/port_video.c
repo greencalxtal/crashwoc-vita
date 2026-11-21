@@ -400,6 +400,16 @@ void DEMOSwapBuffers(void) {
         port_audio_frame();
     }
     pump_events();
+#ifdef PORT_VITA
+    {
+        /* CWOC_KEEPAWAKE=1 (benchmarks without input): reset the idle timers
+         * once a second, as a button press would, so the screen neither dims
+         * nor turns off (turning it back on brings up the lock screen) */
+        static int keep = -1;
+        if (keep < 0) keep = getenv("CWOC_KEEPAWAKE") != NULL;
+        if (keep && g_frames % 60 == 0) sceKernelPowerTick(SCE_KERNEL_POWER_TICK_DEFAULT);
+    }
+#endif
     g_frames++;
     now = SDL_GetTicks();
     {
