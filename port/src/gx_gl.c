@@ -712,12 +712,23 @@ static ShaderEntry *get_shader_inner(void) {
 }
 
 /* render thread: build the GL program of a shader entry on first use */
+/* program creation cost (render thread), reported with the 5 s perf lines:
+ * programs created, ms in vertex / fragment compile and in link + lookups */
+unsigned g_shc_n;
+uint64_t g_shc_us[3];
+
 static void ensure_program(ShaderEntry *e) {
     GLuint v, f;
     int i;
+    uint64_t t0, t1, t2;
     if (e->prog) return;
+    t0 = port_prof_now();
     v = compile(GL_VERTEX_SHADER, e->vsrc);
+    t1 = port_prof_now();
     f = compile(GL_FRAGMENT_SHADER, e->fsrc);
+    t2 = port_prof_now();
+    g_shc_us[0] += t1 - t0;
+    g_shc_us[1] += t2 - t1;
     e->prog = glCreateProgram();
     glAttachShader(e->prog, v);
     glAttachShader(e->prog, f);
@@ -750,6 +761,8 @@ static void ensure_program(ShaderEntry *e) {
         sprintf(nm, "u_tex%d", i);
         e->u_tex[i] = glGetUniformLocation(e->prog, nm);
     }
+    g_shc_us[2] += port_prof_now() - t2;
+    g_shc_n++;
 }
 
 /* -------------------------------------------------------------- textures */

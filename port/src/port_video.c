@@ -354,6 +354,16 @@ static void prof_report(int nf, uint64_t span) {
         for (i = 0; i < 40; i++) port_tb_us[i] = 0, port_tb_n[i] = 0;
         port_log("%s", buf);
     }
+    {
+        /* shader programs created in this window (gx_gl.c ensure_program) */
+        extern unsigned g_shc_n;
+        extern uint64_t g_shc_us[3];
+        if (g_shc_n)
+            port_log("shaders: %u new programs, vs compile %.1f ms, fs compile %.1f ms, link %.1f ms", g_shc_n,
+                     g_shc_us[0] / 1000.0, g_shc_us[1] / 1000.0, g_shc_us[2] / 1000.0);
+        g_shc_n = 0;
+        g_shc_us[0] = g_shc_us[1] = g_shc_us[2] = 0;
+    }
 }
 
 /* render thread (or inline): screenshot + swap */
