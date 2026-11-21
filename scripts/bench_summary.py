@@ -114,6 +114,7 @@ def samples_for_run(events, run_id):
 
 def summarise_samples(samples, seconds):
     game = [s for s in samples if (s.get("foreground") or {}).get("title_id") == "CRWC00001"]
+    game = game[:-1]  # the last window spans the exit
     tail = game[-seconds:] if seconds and len(game) > seconds else game
     if not tail:
         return None
