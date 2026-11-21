@@ -11,3 +11,4 @@ __pycache__/
 *.rvz
 *.dol
 crashwoc-vita-data/
+/gamefiles/
