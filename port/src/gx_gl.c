@@ -2312,62 +2312,138 @@ static void rt_expand_idx(RFrame *fr, const XfSeg *sg) {
     for (; j < n; j++) ix[j] = (u16)(r[j] + b);
 }
 
+/* view-transform (or skin / convert) one recorded segment into g_rt_out,
+ * and write its deferred indices: render thread or transform worker */
+static void rt_xf_seg(RFrame *fr, const XfSeg *sg) {
+    const GLVertex *sp = fr->v + sg->vfirst;
+    GLVertex *d = g_rt_out + sg->vfirst, *e = d + sg->count;
+    if (sg->rel != NULL) rt_expand_idx(fr, sg);
+    if (sg->skm >= 0 && sg->src != NULL) {
+        rt_skin_src(fr, sg);
+    } else if (sg->src != NULL) {
+        rt_copy_xf(fr, sg);
+        return;
+    } else if (sg->skm >= 0) {
+        rt_skin(fr, sg);
+    }
+#if defined(PORT_VITA) && defined(__ARM_NEON)
+    const float32x4_t c0 = { sg->m[0][0], sg->m[1][0], sg->m[2][0], 0.0f };
+    const float32x4_t c1 = { sg->m[0][1], sg->m[1][1], sg->m[2][1], 0.0f };
+    const float32x4_t c2 = { sg->m[0][2], sg->m[1][2], sg->m[2][2], 0.0f };
+    const float32x4_t c3 = { sg->m[0][3], sg->m[1][3], sg->m[2][3], 0.0f };
+    const float32x4_t n0 = { sg->q[0][0], sg->q[1][0], sg->q[2][0], 0.0f };
+    const float32x4_t n1 = { sg->q[0][1], sg->q[1][1], sg->q[2][1], 0.0f };
+    const float32x4_t n2 = { sg->q[0][2], sg->q[1][2], sg->q[2][2], 0.0f };
+    for (; d < e; d++, sp++) {
+        __builtin_prefetch(sp + 8, 0, 0);
+        __builtin_prefetch(d + 8, 1, 0);
+        float32x4_t p = vmlaq_n_f32(vmlaq_n_f32(vmlaq_n_f32(c3, c0, sp->pos[0]), c1, sp->pos[1]), c2, sp->pos[2]);
+        float32x4_t r = vmlaq_n_f32(vmlaq_n_f32(vmulq_n_f32(n0, sp->nrm[0]), n1, sp->nrm[1]), n2, sp->nrm[2]);
+        u32 clr;
+        float t0 = sp->tex[0], t1 = sp->tex[1];
+        memcpy(&clr, sp->clr, 4);
+        rt_store_vtx(d, p, r, clr, t0, t1);
+    }
+#else
+    const float (*m)[4] = sg->m;
+    const float (*q)[3] = sg->q;
+    for (; d < e; d++, sp++) {
+        float x = sp->pos[0], y = sp->pos[1], z = sp->pos[2], nx = sp->nrm[0], ny = sp->nrm[1], nz = sp->nrm[2];
+        if (d != sp) {
+            memcpy(d->clr, sp->clr, 4);
+            d->tex[0] = sp->tex[0];
+            d->tex[1] = sp->tex[1];
+        }
+        d->pos[0] = m[0][0] * x + m[0][1] * y + m[0][2] * z + m[0][3];
+        d->pos[1] = m[1][0] * x + m[1][1] * y + m[1][2] * z + m[1][3];
+        d->pos[2] = m[2][0] * x + m[2][1] * y + m[2][2] * z + m[2][3];
+        d->nrm[0] = q[0][0] * nx + q[0][1] * ny + q[0][2] * nz;
+        d->nrm[1] = q[1][0] * nx + q[1][1] * ny + q[1][2] * nz;
+        d->nrm[2] = q[2][0] * nx + q[2][1] * ny + q[2][2] * nz;
+    }
+#endif
+}
+
+/* segments [a, b) of fr, in order, starting with vertex coverage cov: each
+ * one is preceded by a copy of the uncovered (final) vertices before it.
+ * Segments are recorded in increasing vertex order without overlaps (seg_add
+ * always starts at the arena end), so the ranges of [a, m) and [m, b) are
+ * disjoint and can run on two cores. */
+static void rt_xf_range(RFrame *fr, int a, int b, int cov) {
+    int i;
+    for (i = a; i < b; i++) {
+        const XfSeg *sg = &fr->seg[i];
+        if (cov < sg->vfirst && g_rt_out != fr->v)
+            memcpy(g_rt_out + cov, fr->v + cov, sizeof(GLVertex) * (size_t)(sg->vfirst - cov));
+        rt_xf_seg(fr, sg);
+        if (sg->vfirst + sg->count > cov) cov = sg->vfirst + sg->count;
+    }
+}
+
+/* Transform worker on core 2 (idle otherwise: audio uses ~5% of it). For a
+ * draw with enough pending vertices the render thread hands the second half
+ * of the segments to it, does the first half and waits: the worker only
+ * touches what it was given while the render thread waits, so no other
+ * synchronisation is needed. CWOC_XFWORKER=0 disables it. */
+#define WK_MIN_VERTS 1024
+static int g_wk_on;
+static SDL_sem *g_wk_go;
+static struct { RFrame *fr; int a, b, cov; } g_wk_job;
+static volatile int g_wk_busy;
+uint64_t g_wk_us;     /* worker busy time (reported with the perf lines) */
+unsigned g_wk_jobs;
+
+static int wk_thread(void *arg) {
+    (void)arg;
+#ifdef PORT_VITA
+    sceKernelChangeThreadCpuAffinityMask(0, SCE_KERNEL_CPU_MASK_USER_2);
+#endif
+    for (;;) {
+        uint64_t t0;
+        SDL_SemWait(g_wk_go);
+        t0 = port_prof_now();
+        rt_xf_range(g_wk_job.fr, g_wk_job.a, g_wk_job.b, g_wk_job.cov);
+        g_wk_us += port_prof_now() - t0;
+        g_wk_jobs++;
+        __atomic_store_n(&g_wk_busy, 0, __ATOMIC_RELEASE);
+    }
+    return 0;
+}
+
+static void wk_init(void) {
+    const char *e = getenv("CWOC_XFWORKER");
+    if (e && e[0] == '0') return;
+    g_wk_go = SDL_CreateSemaphore(0);
+    if (g_wk_go && SDL_CreateThreadWithStackSize(wk_thread, "gxxform", 256 * 1024, NULL)) g_wk_on = 1;
+    port_log("gx: transform worker %s", g_wk_on ? "on (core 2)" : "off");
+}
+
 /* render thread: view-transform the recorded segments that start below vend */
 static void rt_transform(int f, int vend) {
     RFrame *fr = &g_rf[f];
-    int n = fr->nseg;
+    int n = fr->nseg, a = g_rt_seg[f], k = a;
     if (g_rt_out == NULL || g_rt_fr != fr) rt_out_begin(fr);
-    while (g_rt_seg[f] < n && fr->seg[g_rt_seg[f]].vfirst < vend) {
-        const XfSeg *sg = &fr->seg[g_rt_seg[f]++];
-        const GLVertex *sp = fr->v + sg->vfirst;
-        GLVertex *d = g_rt_out + sg->vfirst, *e = d + sg->count;
-        rt_gap(fr, sg->vfirst);
-        if (sg->vfirst + sg->count > g_rt_cov) g_rt_cov = sg->vfirst + sg->count;
-        if (sg->rel != NULL) rt_expand_idx(fr, sg);
-        if (sg->skm >= 0 && sg->src != NULL) {
-            rt_skin_src(fr, sg);
-        } else if (sg->src != NULL) {
-            rt_copy_xf(fr, sg);
-            continue;
-        } else if (sg->skm >= 0) {
-            rt_skin(fr, sg);
-        }
-#if defined(PORT_VITA) && defined(__ARM_NEON)
-        const float32x4_t c0 = { sg->m[0][0], sg->m[1][0], sg->m[2][0], 0.0f };
-        const float32x4_t c1 = { sg->m[0][1], sg->m[1][1], sg->m[2][1], 0.0f };
-        const float32x4_t c2 = { sg->m[0][2], sg->m[1][2], sg->m[2][2], 0.0f };
-        const float32x4_t c3 = { sg->m[0][3], sg->m[1][3], sg->m[2][3], 0.0f };
-        const float32x4_t n0 = { sg->q[0][0], sg->q[1][0], sg->q[2][0], 0.0f };
-        const float32x4_t n1 = { sg->q[0][1], sg->q[1][1], sg->q[2][1], 0.0f };
-        const float32x4_t n2 = { sg->q[0][2], sg->q[1][2], sg->q[2][2], 0.0f };
-        for (; d < e; d++, sp++) {
-            __builtin_prefetch(sp + 8, 0, 0);
-            __builtin_prefetch(d + 8, 1, 0);
-            float32x4_t p = vmlaq_n_f32(vmlaq_n_f32(vmlaq_n_f32(c3, c0, sp->pos[0]), c1, sp->pos[1]), c2, sp->pos[2]);
-            float32x4_t r = vmlaq_n_f32(vmlaq_n_f32(vmulq_n_f32(n0, sp->nrm[0]), n1, sp->nrm[1]), n2, sp->nrm[2]);
-            u32 clr;
-            float t0 = sp->tex[0], t1 = sp->tex[1];
-            memcpy(&clr, sp->clr, 4);
-            rt_store_vtx(d, p, r, clr, t0, t1);
-        }
-#else
-        const float (*m)[4] = sg->m;
-        const float (*q)[3] = sg->q;
-        for (; d < e; d++, sp++) {
-            float x = sp->pos[0], y = sp->pos[1], z = sp->pos[2], nx = sp->nrm[0], ny = sp->nrm[1], nz = sp->nrm[2];
-            if (d != sp) {
-                memcpy(d->clr, sp->clr, 4);
-                d->tex[0] = sp->tex[0];
-                d->tex[1] = sp->tex[1];
+    while (k < n && fr->seg[k].vfirst < vend) k++;
+    if (k > a) {
+        const XfSeg *last = &fr->seg[k - 1];
+        int lo = fr->seg[a].vfirst, hi = last->vfirst + last->count;
+        if (g_wk_on && k - a >= 2 && hi - lo >= WK_MIN_VERTS) {
+            int half = lo + (hi - lo) / 2, m = a + 1;
+            while (m < k - 1 && fr->seg[m].vfirst < half) m++;
+            g_wk_job.fr = fr;
+            g_wk_job.a = m;
+            g_wk_job.b = k;
+            g_wk_job.cov = fr->seg[m - 1].vfirst + fr->seg[m - 1].count;
+            __atomic_store_n(&g_wk_busy, 1, __ATOMIC_RELEASE);
+            SDL_SemPost(g_wk_go);
+            rt_xf_range(fr, a, m, g_rt_cov);
+            while (__atomic_load_n(&g_wk_busy, __ATOMIC_ACQUIRE)) {
             }
-            d->pos[0] = m[0][0] * x + m[0][1] * y + m[0][2] * z + m[0][3];
-            d->pos[1] = m[1][0] * x + m[1][1] * y + m[1][2] * z + m[1][3];
-            d->pos[2] = m[2][0] * x + m[2][1] * y + m[2][2] * z + m[2][3];
-            d->nrm[0] = q[0][0] * nx + q[0][1] * ny + q[0][2] * nz;
-            d->nrm[1] = q[1][0] * nx + q[1][1] * ny + q[1][2] * nz;
-            d->nrm[2] = q[2][0] * nx + q[2][1] * ny + q[2][2] * nz;
+        } else {
+            rt_xf_range(fr, a, k, g_rt_cov);
         }
-#endif
+        if (hi > g_rt_cov) g_rt_cov = hi;
+        g_rt_seg[f] = k;
     }
     rt_gap(fr, vend);
 }
@@ -2486,6 +2562,7 @@ static void rq_init(void) {
         }
     }
     port_log("gx: render %s", g_rt_threaded ? "thread (separate core)" : "inline");
+    if (g_rt_threaded && g_rtxf) wk_init();
 }
 
 /* game thread: end of frame */

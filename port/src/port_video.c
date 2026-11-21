@@ -380,6 +380,13 @@ static void prof_report(int nf, uint64_t span) {
         /* shader programs created in this window (gx_gl.c ensure_program) */
         extern unsigned g_shc_n, g_shc_hit;
         extern uint64_t g_shc_us[4];
+        extern uint64_t g_wk_us;
+        extern unsigned g_wk_jobs;
+        if (g_wk_jobs) {
+            port_log("xfworker: %.1f ms/frame on core 2, %u jobs/frame", g_wk_us / 1000.0 / nf, g_wk_jobs / (unsigned)nf);
+            g_wk_us = 0;
+            g_wk_jobs = 0;
+        }
         if (g_shc_n || g_shc_hit)
             port_log("shaders: %u compiled (vs %.1f ms, fs %.1f ms, link+lookups %.1f ms), %u from cache (%.1f ms)",
                      g_shc_n, g_shc_us[0] / 1000.0, g_shc_us[1] / 1000.0, g_shc_us[2] / 1000.0, g_shc_hit,
