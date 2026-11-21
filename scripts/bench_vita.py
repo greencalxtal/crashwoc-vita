@@ -10,7 +10,7 @@ Needs `serve` running. Paths: VAU_DIR (vita-agent-use checkout), VAU_PYTHON
 (Python with `cryptography`), VITA_AGENT_CONFIG_DIR.
 
 Usage: scripts/bench_vita.py OUTDIR [--install build-vita/crashwoc.vpk]
-       [--reps 3] [--only hub,snow_m] [--frames 3200]
+       [--reps 3] [--only hub,snow_m] [--frames 3200] [--env KEY=VALUE ...]
 """
 import argparse
 import json
@@ -50,19 +50,20 @@ def vau(*args, timeout=600):
     return json.loads(lines[-1])
 
 
-def env_text(level, frames):
+def env_text(level, frames, extra=()):
     lines = ["# benchmark run (written by scripts/bench_vita.py); delete this file for normal play",
              "CWOC_SAVE=ux0:data/crashwoc/save_bench", "CWOC_SKIP_LOGOS=1", "CWOC_INTRO=0",
              "CWOC_KEEPAWAKE=1", "CWOC_LONGFRAME=100", "CWOC_FRAMES=%d" % frames]
     if level is not None:
         lines += ["CWOC_WARP=%d@200" % level, "CWOC_INPUT=" + SKIP_INPUT]
+    lines += list(extra)
     return "\n".join(lines) + "\n"
 
 
-def run_one(out, name, level, rep, frames, install):
+def run_one(out, name, level, rep, frames, install, extra=()):
     tag = "%s_%d" % (name, rep)
     envf = out / (tag + ".env.txt")
-    envf.write_text(env_text(level, frames))
+    envf.write_text(env_text(level, frames, extra))
     r = vau("fs", "upload", str(envf), ENV, "--overwrite", "--yes")
     if r.get("verified") is not True and (r.get("result") or {}).get("verified") is not True:
         raise RuntimeError("env.txt upload not verified: %s" % json.dumps(r)[-300:])
@@ -105,18 +106,26 @@ def main():
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--only")
     ap.add_argument("--frames", type=int, default=3200)
+    ap.add_argument("--env", action="append", default=[], help="extra KEY=VALUE for env.txt")
     a = ap.parse_args()
     out = pathlib.Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     names = a.only.split(",") if a.only else list(SCENARIOS)
     install = a.install
-    for rep in range(1, a.reps + 1):
-        for name in names:
-            res = run_one(out, name, SCENARIOS[name], rep, a.frames, install)
-            install = None
-            if res.get("phase") != "completed":
-                print("stopping: run did not complete (locked screen, crash or dialog?)", flush=True)
-                return 1
+    try:
+        for rep in range(1, a.reps + 1):
+            for name in names:
+                res = run_one(out, name, SCENARIOS[name], rep, a.frames, install, a.env)
+                install = None
+                if res.get("phase") != "completed":
+                    print("stopping: run did not complete (locked screen, crash or dialog?)", flush=True)
+                    return 1
+    finally:
+        # leave a comment-only env.txt so the game starts normally afterwards
+        off = out / "env_off.txt"
+        off.write_text("# Opciones de prueba del port (KEY=VALUE por linea). Vacio = juego normal.\n"
+                       "# Lo reescribe scripts/bench_vita.py para las mediciones.\n")
+        vau("fs", "upload", str(off), ENV, "--overwrite", "--yes")
     return 0
 
 
