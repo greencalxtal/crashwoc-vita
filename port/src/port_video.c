@@ -80,10 +80,13 @@ static void display_load(void) {
     port_log("video: display mode %s", g_display_names[g_display_mode]);
 }
 
-void port_display_cycle(void) {
+int port_display_mode(void) { return g_display_mode; }
+
+/* next (dir > 0) or previous display mode, saved (pause menu > OPTIONS) */
+void port_display_step(int dir) {
     char path[512];
     FILE *f;
-    g_display_mode = (g_display_mode + 1) % 3;
+    g_display_mode = (g_display_mode + (dir < 0 ? 2 : 1)) % 3;
     apply_drawable();
     display_path(path, sizeof(path));
     f = fopen(path, "w");
@@ -93,6 +96,8 @@ void port_display_cycle(void) {
     }
     port_log("video: display mode %s", g_display_names[g_display_mode]);
 }
+
+void port_display_cycle(void) { port_display_step(1); }
 
 static void update_drawable(void) {
     SDL_GL_GetDrawableSize(g_window, &g_win_w, &g_win_h);

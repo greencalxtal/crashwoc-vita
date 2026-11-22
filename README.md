@@ -18,7 +18,7 @@ the game: this project contains **no game files**.
 - The whole game can be played: hub, levels, bonus rounds, bosses, vehicles
   (mech, mine kart, buggy, glider...), saves, music and sound.
 - 30–60 fps depending on the area. Busy scenes (lots of enemies, particles,
-  steam) can drop below 30; **Select + D-pad down** locks the frame rate for
+  steam) can drop below 30; **Steady FPS** (pause > Options) locks the frame rate for
   steadier pacing.
 - *Crash Blast* (the Game Boy Advance link-cable minigame in the main menu)
   is not available: there is no GBA on the Vita.
@@ -81,8 +81,8 @@ the game: this project contains **no game files**.
 | L / R | GameCube L / R |
 | Select | GameCube Z |
 | Start | Start / pause |
-| Select + D-pad up | Screen mode: 4:3, stretched, widescreen (saved) |
-| Select + D-pad down | Frame lock on/off (smoother pacing, may cap the frame rate) |
+| Start > Options > Screen | Screen mode: 4:3, stretched, widescreen (saved) |
+| Start > Options > Steady FPS | Frame lock on/off (smoother pacing, may cap the frame rate) |
 
 Saves: `ux0:data/crashwoc/save/`. Log: `ux0:data/crashwoc/crashwoc.log`.
 

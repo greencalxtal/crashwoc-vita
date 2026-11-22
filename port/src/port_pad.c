@@ -58,22 +58,8 @@ unsigned int PADRead(PortPADStatus *status) {
     for (i = 0; i < 4; i++) { memset(&status[i], 0, sizeof(*status)); status[i].err = -1; }
     s->err = 0;
     sceCtrlPeekBufferPositive(0, &c, 1);
-    { /* SELECT + D-pad up: next display mode (port_video.c); hidden from the game */
-        static int combo_held;
-        extern void port_display_cycle(void);
-        int combo = (c.buttons & SCE_CTRL_SELECT) && (c.buttons & SCE_CTRL_UP);
-        if (combo && !combo_held) port_display_cycle();
-        combo_held = combo;
-        if (combo) c.buttons &= ~(SCE_CTRL_SELECT | SCE_CTRL_UP);
-    }
-    { /* SELECT + D-pad down: frame lock on/off (port_os.c) */
-        static int lock_held;
-        extern void port_pace_lock_toggle(void);
-        int combo = (c.buttons & SCE_CTRL_SELECT) && (c.buttons & SCE_CTRL_DOWN);
-        if (combo && !lock_held) port_pace_lock_toggle();
-        lock_held = combo;
-        if (combo) c.buttons &= ~(SCE_CTRL_SELECT | SCE_CTRL_DOWN);
-    }
+    /* (screen mode and frame lock used to be SELECT + D-pad up/down, which
+     * clashed with overlay plugins: they are in pause > OPTIONS now) */
     if (c.buttons & SCE_CTRL_CROSS) s->button |= PAD_BUTTON_A;
     /* the game maps GC A/X/B/Y to the PS2 cross/circle/square/triangle bits
      * (XInputGetState + the padmap code), so B is the spin: put it on Square */

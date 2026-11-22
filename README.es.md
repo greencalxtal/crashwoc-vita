@@ -19,7 +19,7 @@ tu propia copia del juego: este proyecto **no incluye archivos del juego**.
   vehículos (robot, carrito de mina, buggy, planeador...), partidas guardadas,
   música y sonido.
 - 30–60 fps según la zona. Las escenas cargadas (muchos enemigos, partículas,
-  vapor) pueden bajar de 30; **Select + abajo** bloquea los fps para un ritmo
+  vapor) pueden bajar de 30; **FPS estables** (pausa > Opciones) bloquea los fps para un ritmo
   más parejo.
 - *Crash Blast* (el minijuego de Game Boy Advance por cable link del menú
   principal) no está disponible: la Vita no tiene GBA.
@@ -83,8 +83,8 @@ tu propia copia del juego: este proyecto **no incluye archivos del juego**.
 | L / R | L / R de GameCube |
 | Select | Z de GameCube |
 | Start | Start / pausa |
-| Select + arriba | Modo de pantalla: 4:3, estirado, panorámico (se guarda) |
-| Select + abajo | Bloqueo de frames on/off (ritmo más parejo, puede limitar los fps) |
+| Start > Opciones > Pantalla | Modo de pantalla: 4:3, estirado, panorámico (se guarda) |
+| Start > Opciones > FPS estables | Bloqueo de frames on/off (ritmo más parejo, puede limitar los fps) |
 
 Partidas: `ux0:data/crashwoc/save/`. Log: `ux0:data/crashwoc/crashwoc.log`.
 

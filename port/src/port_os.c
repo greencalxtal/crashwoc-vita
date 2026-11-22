@@ -81,7 +81,12 @@ static void pace_lock_load(void) {
     port_log("video: frame lock %s", g_pace_lock ? "on" : "off");
 }
 
-/* Vita: SELECT + D-pad down (port_pad.c) */
+int port_pace_lock_on(void) {
+    if (g_pace_lock < 0) pace_lock_load();
+    return g_pace_lock;
+}
+
+/* pause menu > OPTIONS (port_hooks.c) */
 void port_pace_lock_toggle(void) {
     char path[512];
     FILE *f;

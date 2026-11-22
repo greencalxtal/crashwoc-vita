@@ -257,7 +257,8 @@ BRCOND = {  # mnemonic stem -> (bit-in-field, value)
 HOOKS = {"firstscreens": "port_hook_firstscreens", "PlayCutMovie": "port_hook_PlayCutMovie",
          "LoadIconC8": "port_hook_LoadIconC8",
          "NuHGobjRndrMtxDwa": "port_hook_NuHGobjRndrMtxDwa",
-         "LoadBuggyData": "port_hook_LoadBuggyData"}
+         "LoadBuggyData": "port_hook_LoadBuggyData",
+         "DrawMenuEntry": "port_hook_DrawMenuEntry", "ProcMenu": "port_hook_ProcMenu"}
 # Native names of translated functions that the port renames (main.c is built with -Dmain=cwoc_game_main)
 RENAME = {"main": "cwoc_game_main"}
 # lwz that reads two adjacent u16 fields of a native (little-endian) struct as
