@@ -3125,6 +3125,79 @@ static void draw_block_inner(void) {
     if (!g_batch_on) port_gx_flush();
 }
 
+/* ---- particle quads (renderpsdma, dummyfunc.c; port_quads.h): the caller
+ * set the state of GS_DrawQuadListBeginBlock and writes finished vertices
+ * here. Same batching and deferred transform as a GX_QUADS block through
+ * draw_block_inner, without the FIFO writes and the decode. */
+#include "port_quads.h"
+_Static_assert(sizeof(PortQuadVtx) == sizeof(GLVertex) && offsetof(PortQuadVtx, clr) == offsetof(GLVertex, clr) &&
+                   offsetof(PortQuadVtx, tex) == offsetof(GLVertex, tex),
+               "PortQuadVtx must match GLVertex");
+
+/* what port_gx_quads_end left: unchanged batch, state and matrices mean the
+ * GX state is still the one of that draw (port_gx_quads_state_kept) */
+static struct { const GLVertex *bverts; int bn, bni; u32 ver, frame; unsigned mtx_ver; } g_q_last;
+
+int port_gx_quads_state_kept(void) {
+    return !g_rec_active && g_bshader && g_bn > 0 && g_q_last.bverts == g_bverts && g_q_last.bn == g_bn &&
+           g_q_last.bni == g_bni && g_q_last.ver == g_bstate_ver && g_q_last.mtx_ver == (unsigned)g_mtx_ver &&
+           g_q_last.frame == g_frame && !state_dirty();
+}
+
+PortQuadVtx *port_gx_quads_begin(int maxq) {
+    static int on = -1; /* CWOC_PSDIRECT=0: old FIFO path (A/B) */
+    int n = maxq * 4, same;
+    BatchState cur;
+    if (on < 0) on = !(getenv("CWOC_PSDIRECT") && getenv("CWOC_PSDIRECT")[0] == '0');
+    if (!on || g_rec_active || maxq <= 0 || n > 65535) return NULL;
+    if (g_batch_on < 0) g_batch_on = getenv("CWOC_NOBATCH") == NULL;
+    if (state_dirty() || !g_bn || !g_bshader || !g_batch_on) {
+        PROF_BEGIN_S(PROF_CAPTURE, 16);
+        capture_state(&cur);
+        same = g_batch_on && g_bn && memcmp(&cur, &g_bstate, sizeof(cur)) == 0;
+        PROF_END_S(PROF_CAPTURE, 16);
+    } else {
+        same = 1;
+    }
+    g_dirty = 0;
+    if (!same || g_bn + n > 65535) {
+        port_gx_flush();
+        if (!same) {
+            g_bstate = cur;
+            g_bstate_ver++;
+        }
+        g_bshader = get_shader();
+    }
+    batch_reserve(n, maxq * 6);
+    return (PortQuadVtx *)(g_bverts + g_bn);
+}
+
+void port_gx_quads_end(int nq) {
+    int base = g_bn, n = nq * 4, q;
+    GLVertex *dst = g_bverts + base;
+    u16 *ix = g_bidx + g_bni;
+    if (nq <= 0) return;
+    if (g_rtxf && dst >= g_rf[g_pf].v && dst < g_rf[g_pf].v + RQ_VERTS)
+        seg_add((int)(dst - g_rf[g_pf].v), n); /* the render thread transforms them */
+    else
+        xform_verts(dst, n);
+    for (q = 0; q < nq; q++) {
+        int v0 = base + q * 4;
+        *ix++ = (u16)v0; *ix++ = (u16)(v0 + 1); *ix++ = (u16)(v0 + 2);
+        *ix++ = (u16)v0; *ix++ = (u16)(v0 + 2); *ix++ = (u16)(v0 + 3);
+    }
+    g_bn += n;
+    g_bni += nq * 6;
+    port_gx_stats_draw(n);
+    if (!g_batch_on) port_gx_flush();
+    g_q_last.bverts = g_bverts;
+    g_q_last.bn = g_bn;
+    g_q_last.bni = g_bni;
+    g_q_last.ver = g_bstate_ver;
+    g_q_last.mtx_ver = (unsigned)g_mtx_ver;
+    g_q_last.frame = g_frame;
+}
+
 /* ================================================================ direct paths
  * GS_DrawIndexedTriStrip / GS_DrawIndexedTriList (gsprim.c) feed indexed
  * strips of the game's own vertex arrays: transform each referenced vertex once
