@@ -50,6 +50,24 @@ def vau(*args, timeout=600):
     return json.loads(lines[-1])
 
 
+def upload_env(src, out):
+    """Upload src as env.txt and read it back. Each upload gets its own
+    transfer state: vita-agent-use treats a finished state for the same
+    source and bytes as already done (it only re-checks the old operation),
+    so re-sending an identical env.txt after another one replaced it would
+    silently leave the other one on the Vita."""
+    xfer = out / ".xfer"
+    xfer.mkdir(exist_ok=True)
+    state = xfer / ("%s-%d.json" % (pathlib.Path(src).stem, time.time_ns()))
+    r = vau("fs", "upload", str(src), ENV, "--overwrite", "--yes", "--transfer-state", str(state))
+    if r.get("verified") is not True and (r.get("result") or {}).get("verified") is not True:
+        raise RuntimeError("env.txt upload not verified: %s" % json.dumps(r)[-300:])
+    back = xfer / (state.stem + ".readback.txt")
+    vau("fs", "download", ENV, str(back))
+    if back.read_bytes() != pathlib.Path(src).read_bytes():
+        raise RuntimeError("env.txt on the Vita does not match %s" % src)
+
+
 def env_text(level, frames, extra=()):
     lines = ["# benchmark run (written by scripts/bench_vita.py); delete this file for normal play",
              "CWOC_SAVE=ux0:data/crashwoc/save_bench", "CWOC_SKIP_LOGOS=1", "CWOC_INTRO=0",
@@ -64,9 +82,7 @@ def run_one(out, name, level, rep, frames, install, extra=()):
     tag = "%s_%d" % (name, rep)
     envf = out / (tag + ".env.txt")
     envf.write_text(env_text(level, frames, extra))
-    r = vau("fs", "upload", str(envf), ENV, "--overwrite", "--yes")
-    if r.get("verified") is not True and (r.get("result") or {}).get("verified") is not True:
-        raise RuntimeError("env.txt upload not verified: %s" % json.dumps(r)[-300:])
+    upload_env(envf, out)
     spec = {"title_id": "CRWC00001", "timeout_s": 600, "performance_interval_ms": 1000,
             "close_on_completion": False,
             "completion": {"log": {"path": LOG, "literal": "reached --frames"}}}
@@ -125,7 +141,7 @@ def main():
         off = out / "env_off.txt"
         off.write_text("# Opciones de prueba del port (KEY=VALUE por linea). Vacio = juego normal.\n"
                        "# Lo reescribe scripts/bench_vita.py para las mediciones.\n")
-        vau("fs", "upload", str(off), ENV, "--overwrite", "--yes")
+        upload_env(off, out)
     return 0
 
 
