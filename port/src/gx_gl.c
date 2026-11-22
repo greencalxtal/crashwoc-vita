@@ -20,6 +20,11 @@
 #include "port_gl.h"
 #include "port_prof.h"
 #include <SDL2/SDL.h>
+/* GX thread (gx_rec.c, included at the end): inside this file the public GX
+ * entry points are the implementations, renamed gxi_<name> */
+#define GX_REC_NAMES
+#include "gx_rec_gen.h"
+#undef GX_REC_NAMES
 #ifdef PORT_VITA
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/kernel/cpu.h>
@@ -214,7 +219,18 @@ unsigned char *port_gx_end = g_fifo; /* outside a block every write reaches port
 
 static void gx_block_done(void);
 
+static int g_rec_on;      /* GX thread running (gx_rec.c) */
+static int g_rec_active;  /* game thread: GX calls are being recorded (static pass) */
+static SDL_threadID g_rec_tid;
+static int g_rec_bypass;  /* replaying a copied draw: no index cache, no deferred copy */
+static void rec_fifo_end(void);
+static void rec_init(void);
+
 void port_gx_fifo_end(void) {
+    if (g_rec_active) { /* game thread, recording: the block lives in its record */
+        rec_fifo_end();
+        return;
+    }
     if (g_in_begin) {
         g_fifo_len = (int)(port_gx_wp - g_fifo);
         if (g_fifo_len >= g_need) gx_block_done();
@@ -2017,7 +2033,7 @@ static void rq_sync(void) {
         while (!(g_cf == g_pf && g_ci >= g_pub[g_pf])) SDL_CondWait(g_rq_done, g_rq_m);
         SDL_UnlockMutex(g_rq_m);
         PROF_END(PROF_WAIT);
-        g_port_wait_us += port_prof_now() - w0;
+        if (!g_rec_active) g_port_wait_us += port_prof_now() - w0;
     }
 }
 
@@ -2606,6 +2622,9 @@ static int wk_thread(void *arg) {
 #ifdef PORT_VITA
     sceKernelChangeThreadCpuAffinityMask(0, SCE_KERNEL_CPU_MASK_USER_2);
 #endif
+    /* CWOC_WKPRIO=1: run above the GX thread, which shares core 2 (equal
+     * priorities do not take turns on the Vita) */
+    if (getenv("CWOC_WKPRIO") && getenv("CWOC_WKPRIO")[0] == '1') SDL_SetThreadPriority(SDL_THREAD_PRIORITY_HIGH);
     for (;;) {
         uint64_t t0;
         SDL_SemWait(g_wk_go);
@@ -2801,7 +2820,7 @@ void port_gx_present(int frame) {
         while (g_frames_done < g_frames_sub - 1) SDL_CondWait(g_rq_done, g_rq_m);
         SDL_UnlockMutex(g_rq_m);
         PROF_END(PROF_WAIT);
-        g_port_wait_us += port_prof_now() - w0;
+        if (!g_rec_active) g_port_wait_us += port_prof_now() - w0;
     }
     if (g_idxc_nfree) idxc_free_done();
     if (g_sg_hold > 0 && --g_sg_hold == 0) {
@@ -2833,7 +2852,7 @@ int port_gx_render_threaded(void) { return g_rt_threaded; }
  * from game memory (deferred copies) that the load is about to overwrite.
  * Game thread only (it owns the queue); a no-op elsewhere. */
 void port_gx_idle_for_load(void) {
-    if (g_game_tid == 0 || SDL_ThreadID() != g_game_tid) return;
+    if (g_game_tid == 0 || (SDL_ThreadID() != g_game_tid && (!g_rec_tid || SDL_ThreadID() != g_rec_tid))) return;
     if (!g_idxc_bytes && !g_skc_bytes && !g_idxc_nfree && (!g_rt_threaded || !g_rtcopy)) return;
     /* emit the pending batch and let the render thread run everything: its
      * segments read game memory (deferred copies) and cached index lists */
@@ -3367,6 +3386,7 @@ full:
 }
 
 static int draw_indexed_range(int strips, const short *idx, u32 count, const PortGSVertex *vl, int constcol, u32 col) {
+    if (g_rec_bypass) return 0; /* copied by the GX recorder: convert now, keep no pointer */
     const short *p = idx;
     u32 left = count, total = 0, nitot = 0;
     unsigned mn = 0xFFFF, mx = 0, range, k;
@@ -4075,6 +4095,7 @@ void port_gx_init(void) {
     gx.tev[0].texmap = 0xFF;
     gx.tev[0].channel = 4;
     PSMTXIdentity_port();
+    rec_init();
 }
 
 /* identity matrices for all slots */
@@ -4087,3 +4108,5 @@ void PSMTXIdentity_port(void) {
         gx.nrmmtx[i][0][0] = gx.nrmmtx[i][1][1] = gx.nrmmtx[i][2][2] = 1.0f;
     }
 }
+
+#include "gx_rec.inc"

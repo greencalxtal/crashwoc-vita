@@ -1,0 +1,472 @@
+/* GX thread: the GX emulation runs on its own core (included at the end of
+ * gx_gl.c, which renames its public entry points gxi_<name>).
+ *
+ * The game thread runs the engine (logic, scene building and the material
+ * pass, which calls GX for every draw). With CWOC_GXTHREAD on (default when
+ * the render thread runs), the public GX functions only append a record to a
+ * ring buffer; the "gxrec" thread on core 2 replays them with the original
+ * code (state capture, batching, caches, the render queue for the render
+ * thread). The engine keeps reading its own globals on its own thread: only
+ * the port's GX state moves, and only the GX thread touches it.
+ *
+ * Recording is on only during the engine's static pass, NuMtlRender3d (most
+ * of the GX work: the scene's meshes and skinned models; numtl.c calls
+ * port_gx_rec_scope). Every other GX call (immediate blocks, 2D, faceon,
+ * water, glass, shadows, frame start/end) runs directly on the game thread
+ * as before, after the GX thread has caught up: scratch buffers those paths
+ * reuse are never read late. Inside the static pass the engine draws its mesh
+ * data (pointers kept: the render thread already reads them late) and the
+ * per-model data that changes between models is copied into the record:
+ * loaded matrices, texture and light objects, skin matrices, blend shape and
+ * TSkin vertices. CWOC_GXTHREAD=1 turns it on (off by default, see rec_init). */
+
+#define REC_BYTES (4u << 20)
+
+typedef struct { u16 op, pad; u32 size; } RecHdr; /* size: payload bytes, 8-aligned */
+
+static u8 *g_rec;
+static u32 g_rec_wl;              /* producer: end of the records written (monotonic) */
+static volatile u32 g_rec_w;      /* published end */
+static volatile u32 g_rec_r;      /* consumer position */
+static volatile int g_rec_sleep;  /* consumer waits on g_rec_go */
+static volatile int g_rec_waiter; /* producer waits on g_rec_done */
+static SDL_sem *g_rec_go, *g_rec_done;
+static int g_rec_inblock;         /* producer: a GXBegin block is being written */
+static u32 g_rec_block;           /* its record (offset) */
+static u8 g_rec_scratch[64] __attribute__((aligned(8)));
+uint64_t g_rec_busy_us;           /* GX thread busy time (perf lines) */
+uint64_t g_rec_wait_us;           /* game thread waiting for it */
+unsigned g_rec_syncs;
+
+/* every record is published at once: batching them (2 KB) made no
+ * difference in castle (5100 records, 27 wakeups a frame) and only made the
+ * game thread wait longer at the end of the pass */
+unsigned g_rec_nrec, g_rec_wakes;
+
+static void rec_publish(void) {
+    __atomic_store_n(&g_rec_w, g_rec_wl, __ATOMIC_SEQ_CST);
+    if (__atomic_load_n(&g_rec_sleep, __ATOMIC_SEQ_CST)) {
+        __atomic_store_n(&g_rec_sleep, 0, __ATOMIC_SEQ_CST);
+        g_rec_wakes++;
+        SDL_SemPost(g_rec_go);
+    }
+}
+
+static void rec_block_abort(void);
+
+/* room for need bytes (the consumer frees space as it advances) */
+static void rec_wait_space(u32 need) {
+    while (g_rec_wl + need - __atomic_load_n(&g_rec_r, __ATOMIC_ACQUIRE) > REC_BYTES) {
+        rec_publish();
+        sceKernelDelayThread(50);
+    }
+}
+
+static void *rec_alloc(int op, u32 size) {
+    u32 need = (u32)sizeof(RecHdr) + ((size + 7u) & ~7u), pos;
+    RecHdr *h;
+    if (g_rec_inblock) rec_block_abort();
+    pos = g_rec_wl % REC_BYTES;
+    if (pos + need > REC_BYTES) { /* never wrap inside a record: pad to the end */
+        u32 pad = REC_BYTES - pos;
+        rec_wait_space(pad + need);
+        h = (RecHdr *)(g_rec + pos);
+        h->op = 0; /* RECOP_PAD */
+        h->size = pad - (u32)sizeof(RecHdr);
+        g_rec_wl += pad;
+        pos = 0;
+    } else {
+        rec_wait_space(need);
+    }
+    h = (RecHdr *)(g_rec + pos);
+    h->op = (u16)op;
+    h->size = need - (u32)sizeof(RecHdr);
+    g_rec_wl += need;
+    return h + 1;
+}
+
+static inline void rec_commit(void) {
+    g_rec_nrec++;
+    rec_publish();
+}
+
+/* producer: wait until the GX thread has replayed everything recorded */
+static void rec_sync(void) {
+    uint64_t t0;
+    int spin;
+    rec_publish();
+    if (__atomic_load_n(&g_rec_r, __ATOMIC_ACQUIRE) == g_rec_wl) return;
+    t0 = port_prof_now();
+    for (spin = 0; spin < 4000; spin++)
+        if (__atomic_load_n(&g_rec_r, __ATOMIC_ACQUIRE) == g_rec_wl) goto done;
+    while (__atomic_load_n(&g_rec_r, __ATOMIC_ACQUIRE) != g_rec_wl) {
+        __atomic_store_n(&g_rec_waiter, 1, __ATOMIC_SEQ_CST);
+        if (__atomic_load_n(&g_rec_r, __ATOMIC_SEQ_CST) == g_rec_wl) break;
+        SDL_SemPost(g_rec_go); /* make sure it runs its loop and sees the waiter */
+        SDL_SemWaitTimeout(g_rec_done, 2);
+    }
+done:
+    __atomic_store_n(&g_rec_waiter, 0, __ATOMIC_SEQ_CST);
+    g_rec_wait_us += port_prof_now() - t0;
+    g_rec_syncs++;
+}
+
+/* ---- game-side copy of the vertex format: the block size is needed to know
+ * where a GXBegin block ends (the inline writers end it by byte count) ---- */
+static int g_rsh_desc[GX_VA_MAX_ATTR];
+static AttrFmt g_rsh_fmt[MAX_VTXFMT][GX_VA_MAX_ATTR];
+
+static int rec_vtx_size(int fmt) {
+    int a, off = 0;
+    for (a = 0; a < GX_VA_MAX_ATTR; a++) {
+        int desc = g_rsh_desc[a];
+        if (desc == GX_NONE) continue;
+        off += desc == GX_DIRECT ? direct_size(a, &g_rsh_fmt[fmt][a]) : desc == GX_INDEX8 ? 1 : desc == GX_INDEX16 ? 2 : 0;
+    }
+    return off;
+}
+
+/* ---- records written by hand ---- */
+typedef struct { int prim, fmt, nverts, need; } RecBlock; /* + need bytes */
+typedef struct {
+    int strips, constcol, copied;
+    const short *idx;
+    u32 count, col;
+    const void *verts;
+    int vmin, nv; /* copied: vertex range, then the indices */
+} RecDrawIndexed;
+typedef struct { int n; const void *srcverts; const short *idx; const void *vertlist; } RecDrawTSkin; /* + n vertices */
+typedef struct {
+    int n, lit, bmin, bn;
+    const short *idx;
+    const void *srcverts, *blendsrc;
+    float one;
+    u32 constcol;
+    float mtx[256];
+} RecSkinDraw; /* + bn blend source vertices */
+typedef struct { int frame; } RecPresent;
+
+#define GX_REC_BODY
+#include "gx_rec_gen.h"
+
+void GXClearVtxDesc(void) {
+    if (!g_rec_active) { gxi_GXClearVtxDesc(); return; }
+    memset(g_rsh_desc, 0, sizeof(g_rsh_desc));
+    g_rsh_desc[GX_VA_POS] = GX_DIRECT;
+    rec_alloc(RECOP_GXClearVtxDesc, 0);
+    rec_commit();
+}
+
+typedef struct { int attr, type; } Rec_GXSetVtxDesc;
+void GXSetVtxDesc(int attr, int type) {
+    Rec_GXSetVtxDesc *r;
+    if (!g_rec_active) { gxi_GXSetVtxDesc(attr, type); return; }
+    if (attr >= 0 && attr < GX_VA_MAX_ATTR) g_rsh_desc[attr] = type;
+    r = rec_alloc(RECOP_GXSetVtxDesc, sizeof(*r));
+    r->attr = attr;
+    r->type = type;
+    rec_commit();
+}
+
+typedef struct { int vtxfmt, attr, cnt, type; u8 frac; } Rec_GXSetVtxAttrFmt;
+void GXSetVtxAttrFmt(int vtxfmt, int attr, int cnt, int type, u8 frac) {
+    Rec_GXSetVtxAttrFmt *r;
+    if (!g_rec_active) { gxi_GXSetVtxAttrFmt(vtxfmt, attr, cnt, type, frac); return; }
+    if (vtxfmt >= 0 && vtxfmt < MAX_VTXFMT && attr >= 0 && attr < GX_VA_MAX_ATTR) {
+        g_rsh_fmt[vtxfmt][attr].cnt = cnt;
+        g_rsh_fmt[vtxfmt][attr].type = type;
+        g_rsh_fmt[vtxfmt][attr].frac = frac;
+    }
+    r = rec_alloc(RECOP_GXSetVtxAttrFmt, sizeof(*r));
+    r->vtxfmt = vtxfmt;
+    r->attr = attr;
+    r->cnt = cnt;
+    r->type = type;
+    r->frac = frac;
+    rec_commit();
+}
+
+/* GXBegin: the vertices are written straight into the block's record */
+void GXBegin(int prim, int vtxfmt, u16 nverts) {
+    int vs, need;
+    RecBlock *b;
+    if (!g_rec_active) { gxi_GXBegin(prim, vtxfmt, nverts); return; }
+    if (g_rec_inblock) rec_block_abort();
+    vs = rec_vtx_size(vtxfmt & 7);
+    need = vs * (int)nverts;
+    if (nverts == 0 || vs == 0 || need > (int)(REC_BYTES / 4)) {
+        port_gx_wp = port_gx_end = g_rec_scratch; /* nothing to draw: writes are dropped */
+        return;
+    }
+    b = rec_alloc(RECOP_BLOCK, (u32)sizeof(RecBlock) + (u32)need);
+    b->prim = prim;
+    b->fmt = vtxfmt;
+    b->nverts = nverts;
+    b->need = need;
+    g_rec_block = (u32)((u8 *)b - g_rec);
+    g_rec_inblock = 1;
+    port_gx_wp = (u8 *)(b + 1);
+    port_gx_end = port_gx_wp + need;
+}
+
+/* all the vertices of the block arrived (or data outside a block) */
+static void rec_fifo_end(void) {
+    if (g_rec_inblock && port_gx_wp >= port_gx_end) {
+        g_rec_inblock = 0;
+        rec_commit();
+    }
+    if (!g_rec_inblock) port_gx_wp = port_gx_end = g_rec_scratch;
+}
+
+/* another GX call arrived before the block was complete: drop the block (the
+ * original also drew nothing for it until its vertices arrived) */
+static void rec_block_abort(void) {
+    RecBlock *b = (RecBlock *)(g_rec + g_rec_block);
+    static int warned;
+    if (!warned) {
+        warned = 1;
+        port_log("gxrec: block of %d vertices incomplete (%d of %d bytes), dropped", b->nverts,
+                 (int)(port_gx_wp - (u8 *)(b + 1)), b->need);
+    }
+    b->need = -1;
+    g_rec_inblock = 0;
+    port_gx_wp = port_gx_end = g_rec_scratch;
+    rec_commit();
+}
+
+static void rec_replay_block(const RecBlock *b) {
+    if (b->need < 0) return;
+    g_prim = b->prim;
+    g_vtxfmt = b->fmt & 7;
+    g_nverts = b->nverts;
+    if (g_plan_fmt != g_vtxfmt) {
+        build_plan();
+        g_plan_fmt = g_vtxfmt;
+    }
+    g_need = g_vs * b->nverts;
+    if (g_need != b->need || g_need > (int)sizeof(g_fifo) - 64) {
+        static int warned;
+        if (!warned) {
+            warned = 1;
+            port_log("gxrec: block size mismatch (%d recorded, %d replayed)", b->need, g_need);
+        }
+        return;
+    }
+    memcpy(g_fifo, b + 1, (size_t)g_need);
+    g_fifo_len = g_need;
+    g_in_begin = 0;
+    draw_block();
+    g_fifo_len = 0;
+}
+
+void port_gs_draw_indexed(int strips, const short *idx, u32 count, const void *verts, int constcol, u32 col) {
+    RecDrawIndexed *r;
+    if (!g_rec_active) { gxi_port_gs_draw_indexed(strips, idx, count, verts, constcol, col); return; }
+    r = rec_alloc(RECOP_DRAW_INDEXED, sizeof(*r));
+    r->copied = 0;
+    r->strips = strips;
+    r->idx = idx;
+    r->count = count;
+    r->verts = verts;
+    r->constcol = constcol;
+    r->col = col;
+    rec_commit();
+}
+
+static void rec_replay_draw_indexed(const RecDrawIndexed *r) {
+    if (r->copied) {
+        const PortGSVertex *v = (const PortGSVertex *)(r + 1);
+        const short *ix = (const short *)((const u8 *)(r + 1) + (size_t)r->nv * sizeof(PortGSVertex));
+        g_rec_bypass = 1;
+        gxi_port_gs_draw_indexed(r->strips, ix, r->count, v - r->vmin, r->constcol, r->col);
+        g_rec_bypass = 0;
+    } else {
+        gxi_port_gs_draw_indexed(r->strips, r->idx, r->count, r->verts, r->constcol, r->col);
+    }
+}
+
+void port_gs_draw_tskin(const void *vertlist, int n, const void *srcverts, const short *idx) {
+    RecDrawTSkin *r;
+    if (!g_rec_active) { gxi_port_gs_draw_tskin(vertlist, n, srcverts, idx); return; }
+    if (n <= 0) return;
+    r = rec_alloc(RECOP_DRAW_TSKIN, (u32)sizeof(*r) + (u32)n * sizeof(PortGSVertexNorm));
+    r->n = n;
+    r->srcverts = srcverts;
+    r->idx = idx;
+    memcpy(r + 1, vertlist, (size_t)n * sizeof(PortGSVertexNorm)); /* the engine's TSkin scratch */
+    rec_commit();
+}
+
+void port_gs_skin_draw(int n, const short *idx, const void *srcverts, const void *blendsrc, const float *skinmtx,
+                       float one, int lit, u32 constcol) {
+    RecSkinDraw *r;
+    int bmin = 0, bn = 0;
+    if (!g_rec_active) { gxi_port_gs_skin_draw(n, idx, srcverts, blendsrc, skinmtx, one, lit, constcol); return; }
+    if (blendsrc != NULL && n > 0) { /* blend shape output: a scratch buffer */
+        int i, mn = 0x7FFF, mx = -1;
+        for (i = 0; i < n; i++) {
+            int s = (short)idx[i];
+            if (s < mn) mn = s;
+            if (s > mx) mx = s;
+        }
+        if (mx >= mn) { bmin = mn; bn = mx - mn + 1; }
+    }
+    r = rec_alloc(RECOP_SKIN_DRAW, (u32)sizeof(*r) + (u32)bn * sizeof(PortVec3));
+    r->n = n;
+    r->idx = idx;
+    r->srcverts = srcverts;
+    r->blendsrc = blendsrc;
+    r->one = one;
+    r->lit = lit;
+    r->constcol = constcol;
+    r->bmin = bmin;
+    r->bn = bn;
+    memcpy(r->mtx, skinmtx, sizeof(r->mtx)); /* CV_SKINMTX: rewritten for every model */
+    if (bn) memcpy(r + 1, (const PortVec3 *)blendsrc + bmin, (size_t)bn * sizeof(PortVec3));
+    rec_commit();
+}
+
+static void rec_replay_skin_draw(const RecSkinDraw *r) {
+    const void *bs = r->blendsrc ? (const void *)((const PortVec3 *)(r + 1) - r->bmin) : NULL;
+    gxi_port_gs_skin_draw(r->n, r->idx, r->srcverts, bs, r->mtx, r->one, r->lit, r->constcol);
+}
+
+/* recording on/off around the static pass (numtl.c NuMtlRender3d). Off:
+ * wait for the GX thread to replay everything, then the game thread uses
+ * the GX state directly again (the GX thread is idle until the next pass). */
+void port_gx_rec_scope(int on) {
+    if (!g_rec_on) return;
+    if (on && !g_rec_active) {
+        if (g_in_begin) return; /* a direct block is incomplete: stay direct */
+        memcpy(g_rsh_desc, gx.vtxdesc, sizeof(g_rsh_desc));
+        memcpy(g_rsh_fmt, gx.fmt, sizeof(g_rsh_fmt));
+        port_gx_wp = port_gx_end = g_rec_scratch;
+        g_rec_active = 1;
+    } else if (!on && g_rec_active) {
+        if (g_rec_inblock) rec_block_abort();
+        g_rec_active = 0;
+        rec_sync();
+        port_gx_wp = port_gx_end = g_fifo;
+    }
+}
+
+void port_gx_present(int frame) {
+    if (g_rec_active) port_gx_rec_scope(0);
+    gxi_port_gx_present(frame);
+}
+
+void port_gx_idle_for_load(void) {
+    if (g_rec_active) port_gx_rec_scope(0);
+    gxi_port_gx_idle_for_load();
+}
+
+void port_gx_finish(void) {
+    if (g_rec_active) port_gx_rec_scope(0);
+    gxi_port_gx_finish();
+}
+
+/* NuRndrBeginScene (nurndr.c): nothing is recorded outside the static pass */
+void port_gx_scene_sync(void) {
+    if (g_rec_active) port_gx_rec_scope(0);
+}
+
+static void rec_replay(int op, void *p) {
+    switch (op) {
+    case RECOP_BLOCK: rec_replay_block(p); break;
+    case RECOP_DRAW_INDEXED: rec_replay_draw_indexed(p); break;
+    case RECOP_DRAW_TSKIN: {
+        RecDrawTSkin *r = p;
+        gxi_port_gs_draw_tskin(r + 1, r->n, r->srcverts, r->idx);
+        break;
+    }
+    case RECOP_SKIN_DRAW: rec_replay_skin_draw(p); break;
+    case RECOP_PRESENT: gxi_port_gx_present(((RecPresent *)p)->frame); break;
+    case RECOP_IDLE_FOR_LOAD: gxi_port_gx_idle_for_load(); break;
+    case RECOP_FINISH: gxi_port_gx_finish(); break;
+    case RECOP_SYNC: break;
+    case RECOP_GXClearVtxDesc: gxi_GXClearVtxDesc(); break;
+    case RECOP_GXSetVtxDesc: {
+        Rec_GXSetVtxDesc *r = p;
+        gxi_GXSetVtxDesc(r->attr, r->type);
+        break;
+    }
+    case RECOP_GXSetVtxAttrFmt: {
+        Rec_GXSetVtxAttrFmt *r = p;
+        gxi_GXSetVtxAttrFmt(r->vtxfmt, r->attr, r->cnt, r->type, r->frac);
+        break;
+    }
+    default: rec_replay_generated(op, p); break;
+    }
+}
+
+static int rec_thread(void *arg) {
+    (void)arg;
+#ifdef PORT_VITA
+    sceKernelChangeThreadCpuAffinityMask(0, SCE_KERNEL_CPU_MASK_USER_2);
+#endif
+    g_rec_tid = SDL_ThreadID(); /* records the render queue during the static pass */
+    /* CWOC_GXPRIO=1: above the transform worker that shares core 2 */
+    if (getenv("CWOC_GXPRIO") && getenv("CWOC_GXPRIO")[0] == '1') SDL_SetThreadPriority(SDL_THREAD_PRIORITY_HIGH);
+    for (;;) {
+        u32 w = __atomic_load_n(&g_rec_w, __ATOMIC_ACQUIRE), r = g_rec_r;
+        if (r == w) {
+            if (__atomic_load_n(&g_rec_waiter, __ATOMIC_SEQ_CST)) {
+                __atomic_store_n(&g_rec_waiter, 0, __ATOMIC_SEQ_CST);
+                SDL_SemPost(g_rec_done);
+            }
+            __atomic_store_n(&g_rec_sleep, 1, __ATOMIC_SEQ_CST);
+            if (__atomic_load_n(&g_rec_w, __ATOMIC_SEQ_CST) == r && !__atomic_load_n(&g_rec_waiter, __ATOMIC_SEQ_CST))
+                SDL_SemWait(g_rec_go);
+            __atomic_store_n(&g_rec_sleep, 0, __ATOMIC_SEQ_CST);
+            continue;
+        }
+        {
+            uint64_t t0 = port_prof_now();
+            while (r != w) {
+                RecHdr *h = (RecHdr *)(g_rec + r % REC_BYTES);
+                if (h->op != 0) rec_replay(h->op, h + 1);
+                r += (u32)sizeof(RecHdr) + h->size;
+                __atomic_store_n(&g_rec_r, r, __ATOMIC_RELEASE);
+            }
+            g_rec_busy_us += port_prof_now() - t0;
+        }
+    }
+    return 0;
+}
+
+static void rec_init(void) {
+    /* on by default since the static geometry (GPU memory) emptied core 2:
+     * castle 34.4 -> 35.6 fps, hub 34.2 -> 35.7 (1 run each). It used to
+     * lose (33.0 -> 29.9-31.8 in castle) while the transform worker filled
+     * core 2. CWOC_GXTHREAD=0 keeps the GX work on the game thread. */
+    const char *e = getenv("CWOC_GXTHREAD");
+    if (e && e[0] == '0') return;
+    if (!g_rt_threaded) return;
+    g_rec = malloc(REC_BYTES);
+    g_rec_go = SDL_CreateSemaphore(0);
+    g_rec_done = SDL_CreateSemaphore(0);
+    if (!g_rec || !g_rec_go || !g_rec_done) {
+        port_log("gx: GX thread allocation failed, staying on the game thread");
+        return;
+    }
+    memcpy(g_rsh_desc, gx.vtxdesc, sizeof(g_rsh_desc));
+    memcpy(g_rsh_fmt, gx.fmt, sizeof(g_rsh_fmt));
+    if (!SDL_CreateThreadWithStackSize(rec_thread, "gxrec", 1024 * 1024, NULL)) {
+        port_log("gx: GX thread failed (%s), staying on the game thread", SDL_GetError());
+        return;
+    }
+    g_rec_on = 1;
+    port_log("gx: GX thread on (core 2, %u KB record ring)", REC_BYTES >> 10);
+}
+
+/* GX thread figures for the perf report (per frame over nf frames) */
+int port_gx_rec_report(char *buf, int size, int nf) {
+    int n;
+    if (!g_rec_on) return 0;
+    n = snprintf(buf, (size_t)size, " gxrec busy %.1f wait %.1f syncs %u recs %u wakes %u",
+                 g_rec_busy_us / 1000.0 / nf, g_rec_wait_us / 1000.0 / nf, g_rec_syncs / (unsigned)nf,
+                 g_rec_nrec / (unsigned)nf, g_rec_wakes / (unsigned)nf);
+    g_rec_busy_us = g_rec_wait_us = 0;
+    g_rec_syncs = g_rec_nrec = g_rec_wakes = 0;
+    return n < size ? n : size - 1;
+}

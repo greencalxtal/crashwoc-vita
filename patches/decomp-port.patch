@@ -3751,7 +3751,7 @@ index 61054f6..f1dd8ec 100644
      memset(&light[id],0,100);
      NuMtxSetIdentity((struct Mtx *)&light[id].light.mtx);
 diff --git a/src/nu3dx/numtl.c b/src/nu3dx/numtl.c
-index 9685b8c..a0ea23f 100644
+index 9685b8c..ad71754 100644
 --- a/src/nu3dx/numtl.c
 +++ b/src/nu3dx/numtl.c
 @@ -200,6 +200,9 @@ struct numtl_s * NuMtlRead(s32 fh) {
@@ -3823,7 +3823,15 @@ index 9685b8c..a0ea23f 100644
    return;
  }
  
-@@ -504,11 +528,30 @@ static void NuMtlRender3d(void) {
+@@ -501,19 +525,46 @@ static void NuMtlRender3d(void) {
+   struct nusysmtl_s *sm;
+   struct nurndritem_s *ri;
+ 
++#ifdef PORT
++  /* GX thread: record this pass's GX calls (port/src/gx_rec.inc) */
++  extern void port_gx_rec_scope(int on);
++  port_gx_rec_scope(1);
++#endif
    GS_SetAlphaCompare(7,0);
    for (sm = smlist; sm != NULL; sm = sm->next) {
      if (((sm->mtl).L == '\0') && (sm->rndrlist != NULL)) {
@@ -3854,8 +3862,16 @@ index 9685b8c..a0ea23f 100644
        }
        sm->rndrlist = NULL;
      }
+   }
+   GS_SetAlphaCompare(7,0);
++#ifdef PORT
++  port_gx_rec_scope(0);
++#endif
+   return;
+ }
+ 
 diff --git a/src/nu3dx/nurndr.c b/src/nu3dx/nurndr.c
-index b2137e9..c0a5f25 100644
+index b2137e9..f3a18a5 100644
 --- a/src/nu3dx/nurndr.c
 +++ b/src/nu3dx/nurndr.c
 @@ -12,7 +12,11 @@
@@ -3870,7 +3886,20 @@ index b2137e9..c0a5f25 100644
  static s32 hgobj_enabled;
  struct numtx_s mtx_array2HGobjRndrDwa[256];
  struct numtx_s mtx_array2HGobj[256];
-@@ -63,7 +67,18 @@ void NuRndrEndScene(void) {
+@@ -35,6 +39,12 @@ void NuRndrInit(void) {
+ //MATCH GCN
+ s32 NuRndrBeginScene(s32 hRT) {
+   u32 bs;
++#ifdef PORT
++  { /* GX thread: replay the last scene before its pools are reused */
++    extern void port_gx_scene_sync(void);
++    port_gx_scene_sync();
++  }
++#endif
+ 
+   if (rndrmtx_cnt_max > rndrmtx_cnt) {
+     rndrmtx_cnt_max = rndrmtx_cnt;
+@@ -63,7 +73,18 @@ void NuRndrEndScene(void) {
  
  //MATCH GCN
  void NuRndrFlush(void) {
@@ -3880,16 +3909,16 @@ index b2137e9..c0a5f25 100644
 +    extern int port_in_mtlrender;
 +    tbslotBegin(0, 33); /* port profile: material lists rendered */
 +    port_in_mtlrender = 1;
-     NuMtlRender();
++    NuMtlRender();
 +    port_in_mtlrender = 0;
 +    tbslotEnd(0, 33);
 +#else
-+    NuMtlRender();
+     NuMtlRender();
 +#endif
      NuLightClearStoredLights();
  }
  
-@@ -523,13 +538,25 @@ s32 NuRndrStrip3d(struct nuvtx_tc1_s **vtx,struct numtl_s *mtl,struct numtx_s* w
+@@ -523,13 +544,25 @@ s32 NuRndrStrip3d(struct nuvtx_tc1_s **vtx,struct numtl_s *mtl,struct numtx_s* w
      
      for (i = 0; i < ix; i++) {
          memcpy(vb, *vtx, 0x24);
@@ -3915,7 +3944,7 @@ index b2137e9..c0a5f25 100644
          vtx--;
      }
      
-@@ -650,17 +677,31 @@ void NuRndrFaceItem(struct nugeomitem_s* item) {
+@@ -650,17 +683,31 @@ void NuRndrFaceItem(struct nugeomitem_s* item) {
  }
  
  //MATCH GCN
@@ -3947,7 +3976,7 @@ index b2137e9..c0a5f25 100644
    for (prim = item->geom->prim; prim != NULL; prim = prim->next) {
            switch (prim->type) {
                case NUPT_POINT:
-@@ -685,6 +726,7 @@ static void NuRndrGeomItem(struct nugeomitem_s *item) {
+@@ -685,6 +732,7 @@ static void NuRndrGeomItem(struct nugeomitem_s *item) {
                break;
            }
    }
@@ -3955,7 +3984,7 @@ index b2137e9..c0a5f25 100644
    DBTimerEnd(6);
    return;
  }
-@@ -703,6 +745,25 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
+@@ -703,6 +751,25 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
  
    blendgeom = item->geom->blendgeom;
    DBTimerStart(4);

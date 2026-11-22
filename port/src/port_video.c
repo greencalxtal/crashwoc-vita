@@ -317,7 +317,7 @@ uint64_t port_prof_now(void) {
 static void prof_report(int nf, uint64_t span) {
     static const char *names[PROF_N] = {"block", "capture", "verts", "shader", "texhash", "texdecode", "wait",
                                         "rt_draw", "rt_tex", "rt_copy", "rt_swap", "rt_xf"};
-    char buf[1024];
+    char buf[1536];
     int i, n = 0, threaded = port_gx_render_threaded();
     uint64_t sum = 0, rt = 0;
     if (nf <= 0 || !span) return;
@@ -365,6 +365,10 @@ static void prof_report(int nf, uint64_t span) {
             {
                 extern int port_gx_sg_report(char *buf, int size, int nf);
                 n += port_gx_sg_report(buf + n, (int)sizeof(buf) - n, nf);
+            }
+            {
+                extern int port_gx_rec_report(char *buf, int size, int nf);
+                n += port_gx_rec_report(buf + n, (int)sizeof(buf) - n, nf);
             }
             {
                 extern uint64_t g_dsub[5];
