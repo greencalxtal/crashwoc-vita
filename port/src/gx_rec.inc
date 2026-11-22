@@ -65,9 +65,11 @@ static void rec_block_abort(void);
 /* room for need bytes (the consumer frees space as it advances) */
 static void rec_wait_space(u32 need) {
     while (g_rec_wl + need - __atomic_load_n(&g_rec_r, __ATOMIC_ACQUIRE) > REC_BYTES) {
+        g_ws_game = "rec_space";
         rec_publish();
         sceKernelDelayThread(50);
     }
+    g_ws_game = "-";
 }
 
 static void *rec_alloc(int op, u32 size) {
@@ -114,6 +116,7 @@ static void rec_sync(void) {
     rec_publish();
     if (__atomic_load_n(&g_rec_r, __ATOMIC_ACQUIRE) == g_rec_wl) return;
     t0 = port_prof_now();
+    g_ws_game = "rec_sync";
     for (spin = 0; spin < 4000; spin++)
         if (__atomic_load_n(&g_rec_r, __ATOMIC_ACQUIRE) == g_rec_wl) goto done;
     while (__atomic_load_n(&g_rec_r, __ATOMIC_ACQUIRE) != g_rec_wl) {
@@ -123,6 +126,7 @@ static void rec_sync(void) {
         SDL_SemWaitTimeout(g_rec_done, 2);
     }
 done:
+    g_ws_game = "-";
     __atomic_store_n(&g_rec_waiter, 0, __ATOMIC_SEQ_CST);
     g_rec_wait_us += port_prof_now() - t0;
     g_rec_syncs++;
@@ -451,12 +455,44 @@ static int rec_thread(void *arg) {
     return 0;
 }
 
+/* stall watchdog: when no frame was presented for 30 s (loads take up to
+ * ~15 s), log where each thread waits and which progress counters still move
+ * (twice, 1 s apart), once per stall. Costs a thread that sleeps. */
+static int watchdog_thread(void *arg) {
+    int last = -1, still = 0, logged = 0, k;
+    (void)arg;
+    SDL_SetThreadPriority(SDL_THREAD_PRIORITY_HIGH); /* runs even if a thread spins */
+    for (;;) {
+        int f = port_frame_count();
+        SDL_Delay(1000);
+        if (f != last) {
+            last = f;
+            still = 0;
+            logged = 0;
+            continue;
+        }
+        if (++still < 30 || logged) continue;
+        logged = 1;
+        for (k = 0; k < 2; k++) {
+            port_log("watchdog: no frame for %d s at frame %d | waits game %s rt %s gx %s (sleep %d waiter %d rec %d) | "
+                     "rec wl %u w %u r %u | rq cf %d pf %d ci %d pub %d/%d ncmd %d | frames sub %u done %u | wk busy %d jobs %u | bn %d",
+                     still + k, f, (const char *)g_ws_game, (const char *)g_ws_rt, (const char *)g_ws_gx, g_rec_sleep,
+                     g_rec_waiter, g_rec_active, g_rec_wl, g_rec_w, g_rec_r, g_cf, g_pf, g_ci, g_pub[0], g_pub[1], g_ncmd,
+                     (unsigned)g_frames_sub, (unsigned)g_frames_done, g_wk_busy, g_wk_jobs, g_bn);
+            SDL_Delay(1000);
+        }
+    }
+    return 0;
+}
+
 static void rec_init(void) {
     /* on by default since the static geometry (GPU memory) emptied core 2:
      * castle 34.4 -> 35.6 fps, hub 34.2 -> 35.7 (1 run each). It used to
      * lose (33.0 -> 29.9-31.8 in castle) while the transform worker filled
      * core 2. CWOC_GXTHREAD=0 keeps the GX work on the game thread. */
     const char *e = getenv("CWOC_GXTHREAD");
+    if (!SDL_CreateThreadWithStackSize(watchdog_thread, "watchdog", 64 * 1024, NULL))
+        port_log("gx: watchdog thread failed (%s)", SDL_GetError());
     if (e && e[0] == '0') return;
     if (!g_rt_threaded) return;
     g_rec = malloc(REC_BYTES);

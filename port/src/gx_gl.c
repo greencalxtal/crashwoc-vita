@@ -222,6 +222,9 @@ static void gx_block_done(void);
 static int g_rec_on;      /* GX thread running (gx_rec.c) */
 static int g_rec_active;  /* game thread: GX calls are being recorded (static pass) */
 static SDL_threadID g_rec_tid;
+/* where each thread is waiting, for the stall watchdog (gx_rec.inc) */
+static volatile const char *g_ws_game = "-", *g_ws_rt = "-", *g_ws_gx = "-";
+#define WS_SET(s) do { if (g_rec_tid && SDL_ThreadID() == g_rec_tid) g_ws_gx = (s); else g_ws_game = (s); } while (0)
 static int g_rec_bypass;  /* replaying a copied draw: no index cache, no deferred copy */
 static void rec_fifo_end(void);
 static void rec_init(void);
@@ -2004,7 +2007,9 @@ static int rq_consume(int block) {
             if (g_rt_threaded) SDL_UnlockMutex(g_rq_m);
             return 0;
         }
+        g_ws_rt = "idle";
         SDL_CondWait(g_rq_work, g_rq_m);
+        g_ws_rt = "-";
     }
     f = g_cf;
     from = g_ci;
@@ -2053,9 +2058,11 @@ static void rq_sync(void) {
     {
         uint64_t w0 = port_prof_now();
         PROF_BEGIN(PROF_WAIT);
+        WS_SET("rq_sync");
         SDL_LockMutex(g_rq_m);
         while (!(g_cf == g_pf && g_ci >= g_pub[g_pf])) SDL_CondWait(g_rq_done, g_rq_m);
         SDL_UnlockMutex(g_rq_m);
+        WS_SET("-");
         PROF_END(PROF_WAIT);
         if (!g_rec_active) g_port_wait_us += port_prof_now() - w0;
     }
@@ -2688,8 +2695,10 @@ static void rt_transform(int f, int vend) {
             __atomic_store_n(&g_wk_busy, 1, __ATOMIC_RELEASE);
             SDL_SemPost(g_wk_go);
             rt_xf_range(fr, a, m, g_rt_cov);
+            g_ws_rt = "wk_spin";
             while (__atomic_load_n(&g_wk_busy, __ATOMIC_ACQUIRE)) {
             }
+            g_ws_rt = "-";
         } else {
             rt_xf_range(fr, a, k, g_rt_cov);
         }
@@ -2759,7 +2768,9 @@ static void exec_cmds(int f, int from, int to) {
         }
         case CMD_PRESENT: {
             uint64_t t0 = port_prof_now();
+            g_ws_rt = "present";
             port_video_present(c->u.present.frame);
+            g_ws_rt = "-";
             g_prof[PROF_RT_SWAP] += port_prof_now() - t0;
             g_prof_cnt[PROF_RT_SWAP]++;
             break;
@@ -2840,9 +2851,11 @@ void port_gx_present(int frame) {
     if (g_rt_threaded) {
         uint64_t w0 = port_prof_now();
         PROF_BEGIN(PROF_WAIT);
+        g_ws_game = "present";
         SDL_LockMutex(g_rq_m);
         while (g_frames_done < g_frames_sub - 1) SDL_CondWait(g_rq_done, g_rq_m);
         SDL_UnlockMutex(g_rq_m);
+        g_ws_game = "-";
         PROF_END(PROF_WAIT);
         if (!g_rec_active) g_port_wait_us += port_prof_now() - w0;
     }
