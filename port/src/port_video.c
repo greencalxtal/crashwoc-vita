@@ -363,6 +363,10 @@ static void prof_report(int nf, uint64_t span) {
                 g_skc_hit = g_skc_miss = 0;
             }
             {
+                extern int port_gx_sg_report(char *buf, int size, int nf);
+                n += port_gx_sg_report(buf + n, (int)sizeof(buf) - n, nf);
+            }
+            {
                 extern uint64_t g_dsub[5];
                 extern int g_dsub_on;
                 static const char *dn[5] = {"prep", "lookup", "hitcopy", "miss", "tail"};

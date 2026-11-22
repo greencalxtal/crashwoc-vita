@@ -1540,6 +1540,7 @@ typedef struct {
 } BatchState;
 
 static BatchState g_bstate;      /* state of the pending batch */
+static u32 g_bstate_ver;         /* bumped whenever g_bstate is replaced */
 static ShaderEntry *g_bshader;
 /* the pending batch is built in place in the render queue's vertex/index arenas */
 static GLVertex *g_bverts;  /* = arena vertices + batch start */
@@ -1746,6 +1747,24 @@ static void set_uniforms(ShaderEntry *s, const BatchState *b, const int *texslot
 }
 
 static GLuint g_ring_vbo;             /* Vita: buffer object over the GPU ring */
+/* Static geometry (draw_indexed_range cache hits): model-space vertices and
+ * page-relative indices kept in GPU memory, drawn with the model-view matrix
+ * as a uniform instead of being transformed and copied every frame.
+ * Allocated by the render thread (rt_ring_init), filled by the game thread
+ * the first time a list is drawn. CWOC_STATICGEO=0 disables it. */
+#define SG_PAGE_VERTS 65536           /* u16 indices address one page */
+static GLVertex *g_sg_v;              /* SG pages of SG_PAGE_VERTS vertices */
+static u16 *g_sg_i;                   /* index arena */
+static int g_sg_npages;
+static u32 g_sg_icap;                 /* indices in the arena */
+static GLuint g_sg_vbo, g_sg_ibo;
+static volatile int g_sg_ready;       /* arenas allocated (render thread -> game thread) */
+static int g_sg_page, g_sg_pv;        /* game thread: page being filled, vertices used in it */
+static u32 g_sg_in;                   /* game thread: indices used */
+static int g_sg_hold;                 /* presents left before the arenas may be refilled */
+unsigned g_sg_lists, g_sg_draws, g_sg_cc; /* stats: static lists drawn, GL draws, constant-colour fallbacks */
+unsigned g_sg_made, g_sg_dyn, g_sg_full;  /* stats: lists copied, found rewritten, arena full */
+static int g_vb_mode = -1;            /* render thread: bound vertex source: 0 ring, 1+page static */
 static void gl_draw(ShaderEntry *s, const BatchState *b, const int *texslot, GLenum mode, const GLVertex *v, int n, const u16 *idx, int nidx) {
     ensure_program(s);
     apply_state(b);
@@ -1768,15 +1787,15 @@ static void gl_draw(ShaderEntry *s, const BatchState *b, const int *texslot, GLe
     if (g_ring_vbo) {
         /* GPU-mapped vertices: point the buffer object at this draw's first
          * vertex (attribute offsets are 16-bit in sceGxm) */
-        static int set;
-        if (!set) {
+        if (g_vb_mode != 0) {
+            glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0); /* client indices (copied by vitaGL) */
             glBindBuffer(GL_ARRAY_BUFFER, g_ring_vbo);
             vglBufferData(GL_ARRAY_BUFFER, v);
             glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(GLVertex), (void *)offsetof(GLVertex, pos));
             glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(GLVertex), (void *)offsetof(GLVertex, nrm));
             glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(GLVertex), (void *)offsetof(GLVertex, clr));
             glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(GLVertex), (void *)offsetof(GLVertex, tex));
-            set = 1;
+            g_vb_mode = 0;
         }
         vglBufferData(GL_ARRAY_BUFFER, v);
     } else
@@ -1792,17 +1811,72 @@ static void gl_draw(ShaderEntry *s, const BatchState *b, const int *texslot, GLe
     g_draw_calls++;
 }
 
+#ifdef PORT_VITA
+/* render thread: a static draw (vertices and indices already in GPU memory) */
+static void gl_draw_static(ShaderEntry *s, const BatchState *b, const int *texslot, const float *mq, int page,
+                           u32 first, u32 n) {
+    float m4[16], n3[9];
+    int r, c;
+    ensure_program(s);
+    apply_state(b);
+    if (g_gl.prog != s->prog) {
+        glUseProgram(s->prog);
+        g_gl.prog = s->prog;
+    }
+    set_uniforms(s, b, texslot);
+    /* the model-view matrix the deferred transform would have applied */
+    if (memcmp(s->last_posmtx, mq, sizeof(s->last_posmtx))) {
+        for (r = 0; r < 4; r++)
+            for (c = 0; c < 4; c++) m4[c * 4 + r] = r < 3 ? mq[r * 4 + c] : (c == 3 ? 1.0f : 0.0f);
+        glUniformMatrix4fv(s->u_posmtx, 1, GL_FALSE, m4);
+        memcpy(s->last_posmtx, mq, sizeof(s->last_posmtx));
+    }
+    if (memcmp(s->last_nrmmtx, mq + 12, sizeof(s->last_nrmmtx))) {
+        for (r = 0; r < 3; r++)
+            for (c = 0; c < 3; c++) n3[c * 3 + r] = mq[12 + r * 3 + c];
+        glUniformMatrix3fv(s->u_nrmmtx, 1, GL_FALSE, n3);
+        memcpy(s->last_nrmmtx, mq + 12, sizeof(s->last_nrmmtx));
+    }
+    {
+        static int attribs_on;
+        if (!attribs_on) {
+            glEnableVertexAttribArray(0);
+            glEnableVertexAttribArray(1);
+            glEnableVertexAttribArray(2);
+            glEnableVertexAttribArray(3);
+            attribs_on = 1;
+        }
+    }
+    if (g_vb_mode != 1 + page) {
+        glBindBuffer(GL_ARRAY_BUFFER, g_sg_vbo);
+        vglBufferData(GL_ARRAY_BUFFER, g_sg_v + (size_t)page * SG_PAGE_VERTS);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(GLVertex), (void *)offsetof(GLVertex, pos));
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(GLVertex), (void *)offsetof(GLVertex, nrm));
+        glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(GLVertex), (void *)offsetof(GLVertex, clr));
+        glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(GLVertex), (void *)offsetof(GLVertex, tex));
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_sg_ibo);
+        vglBufferData(GL_ELEMENT_ARRAY_BUFFER, g_sg_i);
+        g_vb_mode = 1 + page;
+    }
+    glDrawElements(GL_TRIANGLES, (GLsizei)n, GL_UNSIGNED_SHORT, (void *)(uintptr_t)(first * 2u));
+    g_draw_calls++;
+}
+#endif
+
 /* ================================================================ render queue
  * The game thread records draws, texture uploads, clears, EFB copies and
  * presents into a per-frame command list; a render thread (its own CPU core on
  * Vita) executes the GL calls. Two frame buffers: the game builds frame N+1
  * while frame N is drawn. CWOC_RT=0 runs the commands inline instead. */
-enum { CMD_DRAW, CMD_UPLOAD, CMD_CLEAR, CMD_COPY, CMD_PRESENT };
+enum { CMD_DRAW, CMD_UPLOAD, CMD_CLEAR, CMD_COPY, CMD_PRESENT, CMD_DRAW_STATIC };
 
 typedef struct {
     int type;
     union {
         struct { ShaderEntry *sh; GLenum mode; int voff, nv, ioff, ni; int st; int texslot[MAX_TEV]; } draw;
+        /* static geometry in GPU memory: indices [first, first+n) of the index
+         * arena, over vertex page 'page', with model-view matrix set 'mtx' */
+        struct { ShaderEntry *sh; u32 first, n; int st, mtx, page; int texslot[MAX_TEV]; } sdraw;
         struct { int slot, w, h; u8 *rgba; } up;
         struct { GXColor col; } clear;
         struct { void *dest; int w, h, rx, ry, rw, rh; } copy;
@@ -1844,12 +1918,15 @@ typedef struct {
     volatile int nseg;      /* published segment count */
     SkinW *skw;             /* per vertex (deferred skinning) */
     float *skm;             /* RQ_SKINM sets of 256 floats */
+    float *smtx;            /* RQ_SMTX model-view sets (3x4 + 3x3) of static draws */
 } RFrame;
+#define RQ_SMTX 4096
 
 static RFrame g_rf[2];
 static int g_pf;                      /* game thread: frame buffer being recorded */
 static int g_nseg;                    /* game thread: segments recorded in g_rf[g_pf] */
 static int g_nskm;                    /* game thread: skin matrix sets used in g_rf[g_pf] */
+static int g_nsm;                     /* game thread: static matrix sets used in g_rf[g_pf] */
 static int g_rtskin = -1;             /* deferred skinning on (CWOC_RTSKIN=0: off) */
 static int g_rtcopy = -1;             /* indexed ranges converted on the render thread (CWOC_RTCOPY=0: off) */
 static int g_seg_nomerge;
@@ -1956,6 +2033,7 @@ static void rq_restart(void) {
     g_ncmd = g_nst = g_voff = g_ioff = g_npub_local = 0;
     g_nseg = 0;
     g_nskm = 0;
+    g_nsm = 0;
     g_rf[g_pf].nseg = 0;
     g_last_st_valid = 0;
 }
@@ -1970,7 +2048,7 @@ static RCmd *rq_cmd(void) {
 /* make room for ncmd commands and nv/ni more vertices/indices (beyond the pending batch) */
 static void rq_ensure(int ncmd, int nv, int ni) {
     if (g_ncmd + ncmd + RQ_MARGIN > RQ_CMDS || g_voff + g_bn + nv > RQ_VERTS || g_ioff + g_bni + ni > RQ_IDX ||
-        g_nseg + 8 > RQ_SEGS || g_nskm + 2 > RQ_SKINM) {
+        g_nseg + 8 > RQ_SEGS || g_nskm + 2 > RQ_SKINM || g_nsm + 2 > RQ_SMTX) {
         batch_emit();
         rq_restart();
         g_bverts = g_rf[g_pf].v;
@@ -2062,6 +2140,62 @@ static void record_draw(ShaderEntry *sh, const BatchState *st, GLenum mode, int 
     rq_commit();
 }
 
+/* game thread: a static draw. The caller ended the pending batch (draw
+ * order); extends the previous static draw when it continues it (same
+ * state, textures, matrices and page, contiguous indices). */
+static int g_last_sm = -1;            /* static matrix set of the last static draw */
+/* state entry and texture slots of the last static draw, valid while
+ * g_bstate (version) and the frame's state list are unchanged */
+static u32 g_sd_ver;
+static int g_sd_st = -1, g_sd_slots[MAX_TEV];
+static void record_draw_static(u32 first, u32 n, int page) {
+    RFrame *fr;
+    const float (*m)[4] = gx.posmtx[gx.cur_posmtx];
+    const float (*q)[3] = gx.nrmmtx[gx.cur_posmtx];
+    float mq[21];
+    int i, *slots = g_sd_slots;
+    RCmd *c;
+    rq_ensure(1 + MAX_TEV, 0, 0); /* texture uploads + the draw */
+    fr = &g_rf[g_pf];
+    memcpy(mq, m, sizeof(float) * 12);
+    memcpy(mq + 12, q, sizeof(float) * 9);
+    if (!(g_last_st_valid && g_sd_ver == g_bstate_ver && g_sd_st == g_nst - 1)) {
+        for (i = 0; i < MAX_TEV; i++)
+            slots[i] = (i < g_bstate.num_tev && g_bstate.texvalid[i]) ? get_texture(&g_bstate.tex[i]) : -1;
+        if (!g_last_st_valid || memcmp(&fr->st[g_nst - 1], &g_bstate, sizeof(g_bstate))) {
+            fr->st[g_nst++] = g_bstate;
+            g_last_st_valid = 1;
+        }
+        g_sd_ver = g_bstate_ver;
+        g_sd_st = g_nst - 1;
+    }
+    if (g_last_sm < 0 || g_last_sm >= g_nsm || memcmp(fr->smtx + 21 * g_last_sm, mq, sizeof(mq))) {
+        memcpy(fr->smtx + 21 * g_nsm, mq, sizeof(mq));
+        g_last_sm = g_nsm++;
+    }
+    g_sg_lists++;
+    if (g_ncmd > g_npub_local) { /* the previous command is still unpublished: merge? */
+        RCmd *p = &fr->cmd[g_ncmd - 1];
+        if (p->type == CMD_DRAW_STATIC && p->u.sdraw.sh == g_bshader && p->u.sdraw.st == g_nst - 1 &&
+            p->u.sdraw.mtx == g_last_sm && p->u.sdraw.page == page && p->u.sdraw.first + p->u.sdraw.n == first &&
+            !memcmp(p->u.sdraw.texslot, slots, sizeof(g_sd_slots))) {
+            p->u.sdraw.n += n;
+            return;
+        }
+    }
+    c = rq_cmd();
+    c->type = CMD_DRAW_STATIC;
+    c->u.sdraw.sh = g_bshader;
+    c->u.sdraw.first = first;
+    c->u.sdraw.n = n;
+    c->u.sdraw.st = g_nst - 1;
+    c->u.sdraw.mtx = g_last_sm;
+    c->u.sdraw.page = page;
+    memcpy(c->u.sdraw.texslot, slots, sizeof(g_sd_slots));
+    g_sg_draws++;
+    rq_commit();
+}
+
 /* record the pending batch; keeps its state/shader so it can continue */
 static void batch_emit(void) {
     if (g_bni > 0 && g_bshader) {
@@ -2111,6 +2245,17 @@ void port_gx_flush(void) {
 static void batch_reserve(int nv, int ni) {
     if (g_bn + nv > 65535) batch_emit();
     rq_ensure(1 + MAX_TEV, nv, ni);
+}
+
+/* static geometry stats for the perf report (per frame over nf frames) */
+int port_gx_sg_report(char *buf, int size, int nf) {
+    int n;
+    if (!g_sg_npages) return 0;
+    n = snprintf(buf, (size_t)size, " static %u lists %u draws (made %u dyn %u full %u cc %u) arena p%d+%dv %uKi",
+                 g_sg_lists / (unsigned)nf, g_sg_draws / (unsigned)nf, g_sg_made, g_sg_dyn, g_sg_full,
+                 g_sg_cc / (unsigned)nf, g_sg_page, g_sg_pv, g_sg_in >> 10);
+    g_sg_lists = g_sg_draws = g_sg_cc = 0;
+    return n < size ? n : size - 1;
 }
 
 int port_gx_take_draw_calls(void) {
@@ -2164,6 +2309,37 @@ static void rt_ring_init(void) {
     }
 #ifdef PORT_VITA
     if (g_ring_on > 0) glGenBuffers(1, &g_ring_vbo);
+    {
+        const char *sg = getenv("CWOC_STATICGEO");
+        size_t vfree = vglMemFree(VGL_MEM_ALL);
+        port_log("gx: GPU memory free %u KB (VRAM %u, RAM %u, PHYCONT %u) after the ring",
+                 (unsigned)(vfree >> 10), (unsigned)(vglMemFree(VGL_MEM_VRAM) >> 10),
+                 (unsigned)(vglMemFree(VGL_MEM_RAM) >> 10), (unsigned)(vglMemFree(VGL_MEM_PHYCONT) >> 10));
+        if (g_ring_on > 0 && !(sg && sg[0] == '0')) {
+            int pages;
+            /* up to 4 pages (9 MB) and 384K indices a page, leaving 4 MB to vitaGL */
+            for (pages = 4; pages > 0; pages--) {
+                size_t vb = (size_t)pages * SG_PAGE_VERTS * sizeof(GLVertex), ib = (size_t)pages * 384 * 1024 * 2;
+                if (vb + ib + (4u << 20) > vfree) continue;
+                g_sg_v = vglMalloc((uint32_t)vb);
+                g_sg_i = g_sg_v ? vglMalloc((uint32_t)ib) : NULL;
+                if (g_sg_v && g_sg_i) {
+                    g_sg_npages = pages;
+                    g_sg_icap = (u32)(ib / 2);
+                    break;
+                }
+                if (g_sg_v) vglFree(g_sg_v);
+                g_sg_v = NULL;
+            }
+            if (g_sg_npages) {
+                glGenBuffers(1, &g_sg_vbo);
+                glGenBuffers(1, &g_sg_ibo);
+                __atomic_store_n(&g_sg_ready, 1, __ATOMIC_RELEASE);
+            }
+            port_log("gx: static geometry %s (%d pages of %d vertices, %u K indices)", g_sg_npages ? "on" : "off",
+                     g_sg_npages, SG_PAGE_VERTS, g_sg_icap >> 10);
+        }
+    }
 #endif
     port_log("gx: GPU vertex ring %s", g_ring_on > 0 ? "on" : "off");
 }
@@ -2501,6 +2677,16 @@ static void exec_cmds(int f, int from, int to) {
             g_prof_cnt[PROF_RT_DRAW]++;
             break;
         }
+#ifdef PORT_VITA
+        case CMD_DRAW_STATIC: {
+            uint64_t t0 = port_prof_now();
+            gl_draw_static(c->u.sdraw.sh, &fr->st[c->u.sdraw.st], c->u.sdraw.texslot, fr->smtx + 21 * c->u.sdraw.mtx,
+                           c->u.sdraw.page, c->u.sdraw.first, c->u.sdraw.n);
+            g_prof[PROF_RT_DRAW] += port_prof_now() - t0;
+            g_prof_cnt[PROF_RT_DRAW]++;
+            break;
+        }
+#endif
         case CMD_UPLOAD: {
             uint64_t t0 = port_prof_now();
             exec_upload(c->u.up.slot, c->u.up.w, c->u.up.h, c->u.up.rgba);
@@ -2564,8 +2750,9 @@ static void rq_init(void) {
         g_rf[i].nseg = 0;
         g_rf[i].skw = malloc(sizeof(SkinW) * RQ_VERTS);
         g_rf[i].skm = malloc(sizeof(float) * 256 * RQ_SKINM);
+        g_rf[i].smtx = malloc(sizeof(float) * 21 * RQ_SMTX);
         if (!g_rf[i].cmd || !g_rf[i].st || !g_rf[i].v || !g_rf[i].ix || !g_rf[i].seg || !g_rf[i].skw ||
-            !g_rf[i].skm)
+            !g_rf[i].skm || !g_rf[i].smtx)
             port_fatal("gx: render queue allocation failed");
     }
     g_bverts = g_rf[0].v;
@@ -2617,10 +2804,15 @@ void port_gx_present(int frame) {
         g_port_wait_us += port_prof_now() - w0;
     }
     if (g_idxc_nfree) idxc_free_done();
+    if (g_sg_hold > 0 && --g_sg_hold == 0) {
+        g_sg_page = g_sg_pv = 0;
+        g_sg_in = 0;
+    }
     g_pf ^= 1;
     g_ncmd = g_nst = g_voff = g_ioff = g_npub_local = 0;
     g_nseg = 0;
     g_nskm = 0;
+    g_nsm = 0;
     g_rf[g_pf].nseg = 0;
     g_last_st_valid = 0;
     g_bverts = g_rf[g_pf].v;
@@ -2841,7 +3033,10 @@ static void draw_block_inner(void) {
     }
     if (!same || g_bn + n > 65535) {
         port_gx_flush();
-        if (!same) g_bstate = cur;
+        if (!same) {
+            g_bstate = cur;
+            g_bstate_ver++;
+        }
         g_bshader = get_shader();
     }
     /* append the vertices once and index them as a triangle list */
@@ -2975,14 +3170,17 @@ static u32 g_rm_gen = 1;
 
 static void direct_prepare(void) {
     if (g_batch_on < 0) g_batch_on = getenv("CWOC_NOBATCH") == NULL;
-    if (state_dirty() || !g_bn || !g_bshader || !g_batch_on) {
+    /* an empty pending batch (after a static draw, a full batch or a queue
+     * restart) keeps its state: g_dirty tracking is what batching relies on */
+    if (state_dirty() || !g_bshader || !g_batch_on) {
         BatchState cur;
         int same;
         capture_state(&cur);
-        same = g_batch_on && g_bn && g_bshader && memcmp(&cur, &g_bstate, sizeof(cur)) == 0;
+        same = g_batch_on && g_bshader && memcmp(&cur, &g_bstate, sizeof(cur)) == 0;
         if (!same) {
             port_gx_flush();
             g_bstate = cur;
+            g_bstate_ver++;
             g_bshader = get_shader();
             g_batch_epoch++;
         }
@@ -3029,6 +3227,12 @@ typedef struct {
     u8 reject;
     u16 *rel;
     u32 stamp; /* frame of the last hit: picks the victim of a 2-way set */
+    /* static geometry copy: 0 not tried, 1 in GPU memory, 2 not possible */
+    u8 sg_state;
+    u16 sg_page;
+    u32 sg_first;      /* first index in the index arena */
+    const void *sg_vl; /* vertex array it was made from */
+    u32 sg_sum;        /* sampled checksum of its source vertices */
 } IdxCache;
 #define IDXC_N 16384
 static IdxCache g_idxc[IDXC_N];
@@ -3093,6 +3297,9 @@ static void idxc_flush(void) {
     }
     g_skc_bytes = 0;
     while (g_idxc_nfree > 0) free(g_idxc_free[--g_idxc_nfree].p);
+    /* every cached list is gone: refill the static arenas from the start, a
+     * few frames from now (the GPU may still be reading the last ones) */
+    g_sg_hold = 3;
 }
 
 static u32 idxc_sum(const short *idx, u32 count) {
@@ -3100,6 +3307,63 @@ static u32 idxc_sum(const short *idx, u32 count) {
     for (i = 0; i < n; i++) h = (h ^ (u16)idx[i]) * 16777619u;
     for (i = count - n; i < count; i++) h = (h ^ (u16)idx[i]) * 16777619u;
     return h;
+}
+
+/* ---- static geometry (see g_sg_v): a cached list's vertex range copied
+ * once, in model space, to GPU memory, with its indices; later hits only
+ * record a draw with the model-view matrix */
+/* sampled checksum of a list's source vertices (first, middle, last): a
+ * vertex array the game rewrites (animated mesh) stops being static */
+static u32 sg_sum(const PortGSVertex *v, u32 n) {
+    const u32 *w[3];
+    u32 h = 2166136261u;
+    int i, k;
+    w[0] = (const u32 *)&v[0];
+    w[1] = (const u32 *)&v[n / 2];
+    w[2] = (const u32 *)&v[n - 1];
+    for (i = 0; i < 3; i++)
+        for (k = 0; k < 9; k++) h = (h ^ w[i][k]) * 16777619u;
+    return h;
+}
+
+static int sg_make(IdxCache *c, const PortGSVertex *vl) {
+    const PortGSVertex *sv = vl + c->mn;
+    const u32 range = c->range, n = c->nitot;
+    GLVertex *d;
+    u16 *ix;
+    u32 j;
+    if ((u32)g_sg_pv + range > SG_PAGE_VERTS) {
+        if (g_sg_page + 1 >= g_sg_npages) goto full;
+        g_sg_page++;
+        g_sg_pv = 0;
+    }
+    if (g_sg_in + n > g_sg_icap) goto full;
+    d = g_sg_v + (size_t)g_sg_page * SG_PAGE_VERTS + g_sg_pv;
+    for (j = 0; j < range; j++, d++, sv++) {
+        u32 cl = sv->diffuse;
+        memcpy(d->pos, &sv->x, 24); /* pos + nrm, model space */
+        d->clr[0] = (u8)(cl >> 24);
+        d->clr[1] = (u8)(cl >> 16);
+        d->clr[2] = (u8)(cl >> 8);
+        d->clr[3] = (u8)cl;
+        d->tex[0] = sv->u;
+        d->tex[1] = sv->v;
+    }
+    ix = g_sg_i + g_sg_in;
+    for (j = 0; j < n; j++) ix[j] = (u16)(c->rel[j] + g_sg_pv);
+    c->sg_page = (u16)g_sg_page;
+    c->sg_first = g_sg_in;
+    c->sg_vl = vl;
+    c->sg_sum = sg_sum(vl + c->mn, range);
+    c->sg_state = 1;
+    g_sg_pv += (int)range;
+    g_sg_in += n;
+    g_sg_made++;
+    return 1;
+full:
+    c->sg_state = 2;
+    g_sg_full++;
+    return 0;
 }
 
 static int draw_indexed_range(int strips, const short *idx, u32 count, const PortGSVertex *vl, int constcol, u32 col) {
@@ -3128,6 +3392,30 @@ static int draw_indexed_range(int strips, const short *idx, u32 count, const Por
             c->stamp = now;
             if (c->reject) return 0;
             if (c->rel != NULL) {
+                if (c->sg_state != 2 && !g_sg_hold && __atomic_load_n(&g_sg_ready, __ATOMIC_ACQUIRE)) {
+                    int ok;
+                    if (constcol) {
+                        ok = 0; /* the colour may change per call: deferred copy */
+                        g_sg_cc++;
+                    } else if (c->sg_state == 1) {
+                        ok = c->sg_vl == (const void *)vl && sg_sum(vl + c->mn, c->range) == c->sg_sum;
+                        if (!ok) {
+                            c->sg_state = 2;
+                            g_sg_dyn++;
+                        }
+                    } else {
+                        ok = sg_make(c, vl);
+                    }
+                    if (ok) {
+                        ds_mark(1);
+                        batch_emit(); /* draw order: the pending batch goes first */
+                        record_draw_static(c->sg_first, c->nitot, c->sg_page);
+                        port_gx_stats_draw((int)c->range);
+                        g_idxc_hit++;
+                        ds_mark(2);
+                        return 1;
+                    }
+                }
                 ds_mark(1);
                 const u16 *r = c->rel;
                 u32 n = c->nitot, j;
@@ -3171,6 +3459,7 @@ static int draw_indexed_range(int strips, const short *idx, u32 count, const Por
         c->chk = chk;
         c->reject = 0;
         c->stamp = now;
+        c->sg_state = 0;
     }
     while (left > 0) {
         int n;
