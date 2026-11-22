@@ -954,7 +954,24 @@ typedef struct {
 /* shadow of the GL texture bindings (vitaGL calls are not free) */
 static GLuint g_bound[8];
 static int g_active_unit = -1;
+/* CWOC_GPUEXP (measurement only, wrong picture): v = 1x1 scissor (vertex and
+ * setup work only), q = quarter-size viewport, t = 1x1 texture everywhere */
+static int g_gpuexp;
+static GLuint g_exp_tex;
+static GLuint exp_tex(void) {
+    if (!g_exp_tex) {
+        static const u8 px[4] = {255, 255, 255, 255};
+        glGenTextures(1, &g_exp_tex);
+        glBindTexture(GL_TEXTURE_2D, g_exp_tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+        g_bound[g_active_unit < 0 ? 0 : g_active_unit] = g_exp_tex;
+    }
+    return g_exp_tex;
+}
 static void bind_tex(int unit, GLuint tex) {
+    if (g_gpuexp == 't' && tex) tex = exp_tex();
     if (g_active_unit != unit) {
         glActiveTexture(GL_TEXTURE0 + unit);
         g_active_unit = unit;
@@ -1628,6 +1645,13 @@ static void apply_state(const BatchState *b) {
     int scy = g_win_h - (g_off_y + (int)(b->scissor[1] * sy)) - sh;
     int blend, bsrc = 0, bdst = 0, beq = 0, cull;
     int v = g_gl.valid;
+    if (g_gpuexp == 'q') {
+        vx /= 2; vy /= 2; vw /= 2; vh /= 2;
+        scx /= 2; scy /= 2; sw /= 2; sh /= 2;
+    } else if (g_gpuexp == 'v') {
+        scx = scy = 0;
+        sw = sh = 1;
+    }
     if (!v || g_gl.vp[0] != vx || g_gl.vp[1] != vy || g_gl.vp[2] != vw || g_gl.vp[3] != vh) {
         glViewport(vx, vy, vw, vh);
         g_gl.vp[0] = vx; g_gl.vp[1] = vy; g_gl.vp[2] = vw; g_gl.vp[3] = vh;
@@ -4082,6 +4106,8 @@ void port_gx_init(void) {
     port_prof_calibrate();
     rq_init();
     g_mipmaps = !(getenv("CWOC_MIPMAPS") && getenv("CWOC_MIPMAPS")[0] == '0');
+    g_gpuexp = getenv("CWOC_GPUEXP") ? getenv("CWOC_GPUEXP")[0] : 0;
+    if (g_gpuexp) port_log("gx: GPU experiment '%c' (measurement only)", g_gpuexp);
     g_trace = getenv("CWOC_GXTRACE") ? atoi(getenv("CWOC_GXTRACE")) : 0;
     g_trace_from = getenv("CWOC_GXTRACE_FROM") ? atoi(getenv("CWOC_GXTRACE_FROM")) : 0;
     GXClearVtxDesc();

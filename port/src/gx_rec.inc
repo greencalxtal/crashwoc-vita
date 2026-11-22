@@ -42,6 +42,14 @@ unsigned g_rec_syncs;
  * difference in castle (5100 records, 27 wakeups a frame) and only made the
  * game thread wait longer at the end of the pass */
 unsigned g_rec_nrec, g_rec_wakes;
+/* CWOC_RECHIST=1 (measurement only): records per op, and how many repeat the
+ * previous record of the same op byte for byte (upper bound for dropping
+ * redundant state on the recording side) */
+static int g_rec_hist = -1;
+static unsigned g_rec_opn[64], g_rec_opdup[64];
+static u8 g_rec_oplast[64][96];
+static u32 g_rec_oplen[64];
+static void *g_rec_lasth;
 
 static void rec_publish(void) {
     __atomic_store_n(&g_rec_w, g_rec_wl, __ATOMIC_SEQ_CST);
@@ -82,11 +90,20 @@ static void *rec_alloc(int op, u32 size) {
     h->op = (u16)op;
     h->size = need - (u32)sizeof(RecHdr);
     g_rec_wl += need;
+    g_rec_lasth = h;
     return h + 1;
 }
 
 static inline void rec_commit(void) {
     g_rec_nrec++;
+    if (g_rec_hist > 0 && g_rec_lasth) {
+        RecHdr *h = (RecHdr *)g_rec_lasth;
+        u32 op = h->op < 63 ? h->op : 63, n = h->size < 96 ? h->size : 96;
+        g_rec_opn[op]++;
+        if (g_rec_oplen[op] == n && !memcmp(g_rec_oplast[op], h + 1, n)) g_rec_opdup[op]++;
+        memcpy(g_rec_oplast[op], h + 1, n);
+        g_rec_oplen[op] = n;
+    }
     rec_publish();
 }
 
@@ -468,5 +485,17 @@ int port_gx_rec_report(char *buf, int size, int nf) {
                  g_rec_nrec / (unsigned)nf, g_rec_wakes / (unsigned)nf);
     g_rec_busy_us = g_rec_wait_us = 0;
     g_rec_syncs = g_rec_nrec = g_rec_wakes = 0;
+    if (g_rec_hist < 0) g_rec_hist = getenv("CWOC_RECHIST") != NULL;
+    if (g_rec_hist > 0) {
+        char hb[1024];
+        int i, k = 0;
+        k += snprintf(hb + k, sizeof(hb) - k, "rechist per frame (op:n/dup):");
+        for (i = 0; i < 64; i++)
+            if (g_rec_opn[i] >= (unsigned)nf * 5 && k < (int)sizeof(hb) - 32)
+                k += snprintf(hb + k, sizeof(hb) - k, " %d:%u/%u", i, g_rec_opn[i] / (unsigned)nf, g_rec_opdup[i] / (unsigned)nf);
+        port_log("%s", hb);
+        memset(g_rec_opn, 0, sizeof(g_rec_opn));
+        memset(g_rec_opdup, 0, sizeof(g_rec_opdup));
+    }
     return n < size ? n : size - 1;
 }

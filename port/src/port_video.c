@@ -134,8 +134,10 @@ void port_platform_init(int argc, char **argv) {
          * first-compile time against GPU cost (part of the program cache key) */
         const char *o = getenv("CWOC_SHOPT");
         if (o && o[0] >= '0' && o[0] <= '4') {
-            vglSetupRuntimeShaderCompiler((shark_opt)(o[0] - '0'), GL_TRUE, GL_FALSE, GL_TRUE);
-            port_log("video: shader compiler optimisation %c", o[0]);
+            /* a 'p' suffix (e.g. 3p) also turns on fast (half) precision */
+            int fp = o[1] == 'p';
+            vglSetupRuntimeShaderCompiler((shark_opt)(o[0] - '0'), GL_TRUE, fp ? GL_TRUE : GL_FALSE, GL_TRUE);
+            port_log("video: shader compiler optimisation %c%s", o[0], fp ? " + fast precision" : "");
         }
     }
 #else
@@ -275,6 +277,14 @@ static void maybe_warp(void) {
 }
 
 uint64_t g_prof[PROF_N];
+unsigned port_ps_calls, port_ps_quads; /* renderpsdma (dummyfunc.c): particle batches and quads */
+/* game-side GX emulation time so far (crashlib.c splits it per timing slot) */
+unsigned long long port_prof_gx_total(void) {
+    uint64_t s = 0;
+    int i;
+    for (i = 0; i < PROF_WAIT; i++) s += g_prof[i];
+    return s;
+}
 uint32_t g_prof_cnt[PROF_N];
 uint64_t g_prof_child;
 uint64_t g_prof_ovh;
@@ -312,6 +322,22 @@ uint64_t port_prof_now(void) {
 #else
     return (uint64_t)(SDL_GetPerformanceCounter() * 1000000.0 / (double)SDL_GetPerformanceFrequency());
 #endif
+}
+
+/* CWOC_GPUFIN=1 (measurement only): wait for the GPU after every swap and time
+ * it, i.e. the GPU time of each frame (serialises CPU and GPU: lower fps) */
+static int g_gpufin = -1;
+static uint64_t g_gpufin_us;
+static unsigned g_gpufin_n;
+static const char *port_gpufin_report(int nf) {
+    static char b[48];
+    b[0] = 0;
+    if (g_gpufin > 0 && g_gpufin_n) {
+        snprintf(b, sizeof(b), " | gpufin %.1f (%u)", g_gpufin_us / 1000.0 / g_gpufin_n, g_gpufin_n / (unsigned)nf);
+        g_gpufin_us = 0;
+        g_gpufin_n = 0;
+    }
+    return b;
 }
 
 static void prof_report(int nf, uint64_t span) {
@@ -391,8 +417,37 @@ static void prof_report(int nf, uint64_t span) {
                 }
             }
         }
-        for (i = 0; i < 40; i++) port_tb_us[i] = 0, port_tb_n[i] = 0;
         port_log("%s", buf);
+        {
+            /* game thread, exclusive ms/frame: engine material passes (slot 33)
+             * are taken out of the slots they run in (crashlib.c port_tb_nest) */
+            extern unsigned long long port_tb_nest[40];
+#define TBX(s) ((port_tb_us[s] - port_tb_nest[s]) / 1000.0 / nf)
+            double fr = port_tb_us[0] / 1000.0 / nf, mtl = port_tb_us[33] / 1000.0 / nf;
+            double lg = TBX(34), sc = TBX(9), ex = TBX(14), fx = TBX(2), pn = TBX(31);
+            port_log("gt ms/frame: frame %.1f (+%.1f outside) | logic %.1f (%.2f ticks, %.2f/tick) scene %.1f explo %.1f "
+                     "fx %.1f panel %.1f mtl %.1f (in scene %.1f explo %.1f fx %.1f panel %.1f) rest %.1f%s",
+                     fr, span / 1000.0 / nf - fr, lg, port_tb_n[34] / (double)nf,
+                     port_tb_n[34] ? (port_tb_us[34] - port_tb_nest[34]) / 1000.0 / port_tb_n[34] : 0.0, sc, ex, fx, pn,
+                     mtl, port_tb_nest[9] / 1000.0 / nf, port_tb_nest[14] / 1000.0 / nf, port_tb_nest[2] / 1000.0 / nf,
+                     port_tb_nest[31] / 1000.0 / nf, fr - (lg + sc + ex + fx + pn + mtl), port_gpufin_report(nf));
+#undef TBX
+            {
+                extern unsigned long long port_tb_gx[40];
+                port_log("gtgx ms/frame: GX emulation in scene %.1f explo %.1f fx %.1f panel %.1f | clouds %.1f "
+                         "(gx %.1f) | particles %u batches %u quads",
+                         port_tb_gx[9] / 1000.0 / nf, port_tb_gx[14] / 1000.0 / nf, port_tb_gx[2] / 1000.0 / nf,
+                         port_tb_gx[31] / 1000.0 / nf, (port_tb_us[35] - port_tb_nest[35]) / 1000.0 / nf,
+                         port_tb_gx[35] / 1000.0 / nf, port_ps_calls / (unsigned)nf, port_ps_quads / (unsigned)nf);
+                port_ps_calls = port_ps_quads = 0;
+                for (i = 0; i < 40; i++) port_tb_gx[i] = 0;
+            }
+        }
+        for (i = 0; i < 40; i++) port_tb_us[i] = 0, port_tb_n[i] = 0;
+        {
+            extern unsigned long long port_tb_nest[40];
+            for (i = 0; i < 40; i++) port_tb_nest[i] = 0;
+        }
     }
     {
         /* shader programs created in this window (gx_gl.c ensure_program) */
@@ -425,6 +480,13 @@ void port_video_present(int frame) {
     maybe_screenshot(frame);
 #ifdef PORT_VITA
     vglSwapBuffers(GL_FALSE);
+    if (g_gpufin < 0) g_gpufin = getenv("CWOC_GPUFIN") && getenv("CWOC_GPUFIN")[0] == '1';
+    if (g_gpufin) {
+        uint64_t t0 = port_prof_now();
+        glFinish();
+        g_gpufin_us += port_prof_now() - t0;
+        g_gpufin_n++;
+    }
 #else
     SDL_GL_SwapWindow(g_window);
 #endif
