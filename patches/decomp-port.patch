@@ -4821,6 +4821,117 @@ index 2fb83b4..b2fc28c 100644
  		if (blkinfo[bh].hdr.size < 0) {
  			blkinfo[bh].hdr.size = -blkinfo[bh].hdr.size;
  		}
+diff --git a/src/numath/numtx.c b/src/numath/numtx.c
+index e57631e..7b9a582 100644
+--- a/src/numath/numtx.c
++++ b/src/numath/numtx.c
+@@ -307,6 +307,97 @@ void NuMtxSetRotateXYZ(struct Mtx* m, s32 a[3])
+ 	m->m44 = 1.00000000;
+ }
+ 
++#if defined(PORT) && defined(__ARM_NEON)
++#include <arm_neon.h>
++/* PORT: NEON with the same products and the same order of the sums as the C
++ * below (NEON multiply-accumulate rounds like the scalar code, and FZ is on
++ * either way): identical results, a fraction of the time. Every row is
++ * loaded before anything is stored (dest may be a or b). */
++void NuMtxMul(struct Mtx* dest, struct Mtx* a, struct Mtx* b)
++{
++	const float32x4_t b1 = vld1q_f32(&b->m11), b2 = vld1q_f32(&b->m21), b3 = vld1q_f32(&b->m31), b4 = vld1q_f32(&b->m41);
++	const float a11 = a->m11, a12 = a->m12, a13 = a->m13, a21 = a->m21, a22 = a->m22, a23 = a->m23;
++	const float a31 = a->m31, a32 = a->m32, a33 = a->m33, a41 = a->m41, a42 = a->m42, a43 = a->m43;
++	float32x4_t r1 = vmlaq_n_f32(vmlaq_n_f32(vmulq_n_f32(b3, a13), b1, a11), b2, a12);
++	float32x4_t r2 = vmlaq_n_f32(vmlaq_n_f32(vmulq_n_f32(b3, a23), b1, a21), b2, a22);
++	float32x4_t r3 = vmlaq_n_f32(vmlaq_n_f32(vmulq_n_f32(b3, a33), b1, a31), b2, a32);
++	float32x4_t r4 = vaddq_f32(vmlaq_n_f32(vmlaq_n_f32(vmulq_n_f32(b3, a43), b1, a41), b2, a42), b4);
++	r1 = vsetq_lane_f32(0.0f, r1, 3);
++	r2 = vsetq_lane_f32(0.0f, r2, 3);
++	r3 = vsetq_lane_f32(0.0f, r3, 3);
++	r4 = vsetq_lane_f32(1.0f, r4, 3);
++	vst1q_f32(&gm.m11, r1); vst1q_f32(&gm.m21, r2); vst1q_f32(&gm.m31, r3); vst1q_f32(&gm.m41, r4);
++	vst1q_f32(&dest->m11, r1); vst1q_f32(&dest->m21, r2); vst1q_f32(&dest->m31, r3); vst1q_f32(&dest->m41, r4);
++}
++
++void NuMtxMulH(struct Mtx* dest, struct Mtx* a, struct Mtx* b)
++{
++	const float32x4_t b1 = vld1q_f32(&b->m11), b2 = vld1q_f32(&b->m21), b3 = vld1q_f32(&b->m31), b4 = vld1q_f32(&b->m41);
++	const float32x4_t ar1 = vld1q_f32(&a->m11), ar2 = vld1q_f32(&a->m21), ar3 = vld1q_f32(&a->m31), ar4 = vld1q_f32(&a->m41);
++#define MULH_ROW(ar) vmlaq_n_f32(vmlaq_n_f32(vmlaq_n_f32(vmulq_n_f32(b4, vgetq_lane_f32(ar, 3)), b3, vgetq_lane_f32(ar, 2)), \
++                                             b1, vgetq_lane_f32(ar, 0)), b2, vgetq_lane_f32(ar, 1))
++	const float32x4_t r1 = MULH_ROW(ar1), r2 = MULH_ROW(ar2), r3 = MULH_ROW(ar3), r4 = MULH_ROW(ar4);
++#undef MULH_ROW
++	vst1q_f32(&gm.m11, r1); vst1q_f32(&gm.m21, r2); vst1q_f32(&gm.m31, r3); vst1q_f32(&gm.m41, r4);
++	vst1q_f32(&dest->m11, r1); vst1q_f32(&dest->m21, r2); vst1q_f32(&dest->m31, r3); vst1q_f32(&dest->m41, r4);
++}
++#define PORT_NEON_MTXMUL 1
++
++/* startup check (port_gx_init): the NEON versions against the original
++ * scalar formulas, bit for bit, on pseudo-random matrices */
++static float st_rnd(unsigned *x) {
++	*x = *x * 1664525u + 1013904223u;
++	return ((float)(int)(*x >> 8) / 8388608.0f - 1.0f) * (float)(1 + (*x & 7) * 37);
++}
++int port_mtx_selftest(void) {
++	unsigned x = 12345u;
++	int t, i, bad = 0;
++	for (t = 0; t < 2000; t++) {
++		struct Mtx a, b, r1, r2;
++		float *pa = &a.m11, *pb = &b.m11;
++		for (i = 0; i < 16; i++) { pa[i] = st_rnd(&x); pb[i] = st_rnd(&x); }
++		NuMtxMulH(&r1, &a, &b);
++		r2.m11 = a.m14 * b.m41 + a.m13 * b.m31 + a.m11 * b.m11 + a.m12 * b.m21;
++		r2.m12 = a.m14 * b.m42 + a.m13 * b.m32 + a.m11 * b.m12 + a.m12 * b.m22;
++		r2.m13 = a.m14 * b.m43 + a.m13 * b.m33 + a.m11 * b.m13 + a.m12 * b.m23;
++		r2.m14 = a.m14 * b.m44 + a.m13 * b.m34 + a.m11 * b.m14 + a.m12 * b.m24;
++		r2.m21 = a.m24 * b.m41 + a.m23 * b.m31 + a.m21 * b.m11 + a.m22 * b.m21;
++		r2.m22 = a.m24 * b.m42 + a.m23 * b.m32 + a.m21 * b.m12 + a.m22 * b.m22;
++		r2.m23 = a.m24 * b.m43 + a.m23 * b.m33 + a.m21 * b.m13 + a.m22 * b.m23;
++		r2.m24 = a.m24 * b.m44 + a.m23 * b.m34 + a.m21 * b.m14 + a.m22 * b.m24;
++		r2.m31 = a.m34 * b.m41 + a.m33 * b.m31 + a.m31 * b.m11 + a.m32 * b.m21;
++		r2.m32 = a.m34 * b.m42 + a.m33 * b.m32 + a.m31 * b.m12 + a.m32 * b.m22;
++		r2.m33 = a.m34 * b.m43 + a.m33 * b.m33 + a.m31 * b.m13 + a.m32 * b.m23;
++		r2.m34 = a.m34 * b.m44 + a.m33 * b.m34 + a.m31 * b.m14 + a.m32 * b.m24;
++		r2.m41 = a.m44 * b.m41 + a.m43 * b.m31 + a.m41 * b.m11 + a.m42 * b.m21;
++		r2.m42 = a.m44 * b.m42 + a.m43 * b.m32 + a.m41 * b.m12 + a.m42 * b.m22;
++		r2.m43 = a.m44 * b.m43 + a.m43 * b.m33 + a.m41 * b.m13 + a.m42 * b.m23;
++		r2.m44 = a.m44 * b.m44 + a.m43 * b.m34 + a.m41 * b.m14 + a.m42 * b.m24;
++		if (memcmp(&r1, &r2, sizeof(r1))) bad++;
++		NuMtxMul(&r1, &a, &b);
++		r2.m11 = a.m13 * b.m31 + a.m11 * b.m11 + a.m12 * b.m21;
++		r2.m12 = a.m13 * b.m32 + a.m11 * b.m12 + a.m12 * b.m22;
++		r2.m13 = a.m13 * b.m33 + a.m11 * b.m13 + a.m12 * b.m23;
++		r2.m14 = 0.0f;
++		r2.m21 = a.m23 * b.m31 + a.m21 * b.m11 + a.m22 * b.m21;
++		r2.m22 = a.m23 * b.m32 + a.m21 * b.m12 + a.m22 * b.m22;
++		r2.m23 = a.m23 * b.m33 + a.m21 * b.m13 + a.m22 * b.m23;
++		r2.m24 = 0.0f;
++		r2.m31 = a.m33 * b.m31 + a.m31 * b.m11 + a.m32 * b.m21;
++		r2.m32 = a.m33 * b.m32 + a.m31 * b.m12 + a.m32 * b.m22;
++		r2.m33 = a.m33 * b.m33 + a.m31 * b.m13 + a.m32 * b.m23;
++		r2.m34 = 0.0f;
++		r2.m41 = a.m43 * b.m31 + a.m41 * b.m11 + a.m42 * b.m21 + b.m41;
++		r2.m42 = a.m43 * b.m32 + a.m41 * b.m12 + a.m42 * b.m22 + b.m42;
++		r2.m43 = a.m43 * b.m33 + a.m41 * b.m13 + a.m42 * b.m23 + b.m43;
++		r2.m44 = 1.0f;
++		if (memcmp(&r1, &r2, sizeof(r1))) bad++;
++	}
++	return bad;
++}
++#endif
++
++#ifndef PORT_NEON_MTXMUL
+ void NuMtxMul(struct Mtx* dest, struct Mtx* a, struct Mtx* b)
+ {
+ 	gm.m11 = a->m13 * b->m31 + a->m11 * b->m11 + a->m12 * b->m21;
+@@ -379,6 +470,8 @@ void NuMtxMulH(struct Mtx* dest, struct Mtx* a, struct Mtx* b)
+ 	dest->m44 = gm.m44;
+ }
+ 
++#endif /* PORT_NEON_MTXMUL */
++
+ void NuMtxMulR(struct Mtx* dest, struct Mtx* a, struct Mtx* b)
+ {
+ 	gm.m11 = a->m13 * b->m31 + a->m11 * b->m11 + a->m12 * b->m21;
 diff --git a/src/numath/nuquat.c b/src/numath/nuquat.c
 index 64a2d7a..9bcebdc 100644
 --- a/src/numath/nuquat.c
@@ -5528,7 +5639,7 @@ index dd8792b..d3ea6df 100644
 +#endif
  }
 diff --git a/src/system/gs/gs.c b/src/system/gs/gs.c
-index 8a24380..0c419a1 100644
+index 8a24380..0f5a3ed 100644
 --- a/src/system/gs/gs.c
 +++ b/src/system/gs/gs.c
 @@ -21,6 +21,18 @@
@@ -5677,6 +5788,77 @@ index 8a24380..0c419a1 100644
      GXSetProjection((float **)pMtx,GX_PERSPECTIVE);
      return;
  }
+@@ -449,6 +478,62 @@ void GS_LoadWorldMatrixIdentity(void) {
+ }
+ 
+ //NGC MATCH
++#if defined(PORT) && defined(__ARM_NEON)
++#include <arm_neon.h>
++/* PORT: once per drawn model. The GX matrix is rows 1-3 of
++ * MatReorder(world * view), i.e. columns 1, 2 and -3 of the product: computed
++ * straight from the columns of the world matrix with NEON, with the products
++ * and sums in MatMult's order (same rounding: identical matrix), without the
++ * copies, the scalar 4x4 product and the reorder. */
++void GS_SetWorldMatrix(struct _GSMATRIX *pMatrix) {
++  float M[3][4];
++  const float *v = (const float *)&GS_MatView;
++  float32x4x4_t c;
++
++  memcpy(GS_MatWorld, pMatrix, sizeof(float[4][4]));
++  c = vld4q_f32((const float *)GS_MatWorld); /* c.val[k] = column k+1 */
++#define WCOL(j) vmlaq_n_f32(vmlaq_n_f32(vmlaq_n_f32(vmulq_n_f32(c.val[0], v[0 + (j)]), c.val[1], v[4 + (j)]), \
++                                        c.val[2], v[8 + (j)]), c.val[3], v[12 + (j)])
++  vst1q_f32(M[0], WCOL(0));
++  vst1q_f32(M[1], WCOL(1));
++  vst1q_f32(M[2], vnegq_f32(WCOL(2)));
++#undef WCOL
++  GXLoadPosMtxImm(&M,0);
++  GXSetCurrentMtx(0);
++  GS_WorldMatIsIdentity = 0;
++  return;
++}
++
++/* startup check (port_gx_init): the fused matrix against MatMult + MatReorder */
++int port_gs_mtx_selftest(void) {
++  unsigned x = 777u;
++  int t, i, j, bad = 0;
++  float view[4][4];
++  memcpy(view, GS_MatView, sizeof(view));
++  for (t = 0; t < 2000; t++) {
++    struct _GSMATRIX w, ref;
++    float M[3][4], *pw = (float *)&w, *pv = (float *)GS_MatView;
++    const float *v;
++    float32x4x4_t c;
++    for (i = 0; i < 16; i++) {
++      x = x * 1664525u + 1013904223u; pw[i] = ((float)(int)(x >> 8) / 8388608.0f - 1.0f) * (float)(1 + (x & 7) * 37);
++      x = x * 1664525u + 1013904223u; pv[i] = ((float)(int)(x >> 8) / 8388608.0f - 1.0f) * (float)(1 + (x & 7) * 37);
++    }
++    ref = w;
++    MatMult(&ref, (struct _GSMATRIX *)GS_MatView);
++    MatReorder(&ref);
++    v = (const float *)GS_MatView;
++    c = vld4q_f32((const float *)&w);
++    vst1q_f32(M[0], vmlaq_n_f32(vmlaq_n_f32(vmlaq_n_f32(vmulq_n_f32(c.val[0], v[0]), c.val[1], v[4]), c.val[2], v[8]), c.val[3], v[12]));
++    vst1q_f32(M[1], vmlaq_n_f32(vmlaq_n_f32(vmlaq_n_f32(vmulq_n_f32(c.val[0], v[1]), c.val[1], v[5]), c.val[2], v[9]), c.val[3], v[13]));
++    vst1q_f32(M[2], vnegq_f32(vmlaq_n_f32(vmlaq_n_f32(vmlaq_n_f32(vmulq_n_f32(c.val[0], v[2]), c.val[1], v[6]), c.val[2], v[10]), c.val[3], v[14])));
++    for (j = 0; j < 12; j++)
++      if (memcmp(&M[j / 4][j % 4], (float *)&ref + j, 4)) { bad++; break; }
++  }
++  memcpy(GS_MatView, view, sizeof(view));
++  return bad;
++}
++#else
+ void GS_SetWorldMatrix(struct _GSMATRIX *pMatrix) {
+   struct _GSMATRIX local_48;
+ 
+@@ -460,6 +545,7 @@ void GS_SetWorldMatrix(struct _GSMATRIX *pMatrix) {
+   GS_WorldMatIsIdentity = 0;
+   return;
+ }
++#endif
+ 
+ void GS_CopyTextureFromFB(void) {
+     return;
 diff --git a/src/system/gs/gs.h b/src/system/gs/gs.h
 index 955d883..6e77f6e 100644
 --- a/src/system/gs/gs.h

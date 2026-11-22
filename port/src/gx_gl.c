@@ -4192,6 +4192,14 @@ void port_gx_init(void) {
     port_prof_calibrate();
     rq_init();
     g_mipmaps = !(getenv("CWOC_MIPMAPS") && getenv("CWOC_MIPMAPS")[0] == '0');
+#if defined(PORT_VITA) && defined(__ARM_NEON)
+    {
+        /* the NEON matrix products must match the game's scalar ones bit for bit */
+        extern int port_mtx_selftest(void), port_gs_mtx_selftest(void);
+        port_log("gx: NEON matrix check: %d / %d mismatches (NuMtxMul(H) / world matrix)", port_mtx_selftest(),
+                 port_gs_mtx_selftest());
+    }
+#endif
     g_gpuexp = getenv("CWOC_GPUEXP") ? getenv("CWOC_GPUEXP")[0] : 0;
     if (g_gpuexp) port_log("gx: GPU experiment '%c' (measurement only)", g_gpuexp);
     g_trace = getenv("CWOC_GXTRACE") ? atoi(getenv("CWOC_GXTRACE")) : 0;
