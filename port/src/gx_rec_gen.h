@@ -211,6 +211,18 @@ typedef struct { u16 left; u16 top; u16 wd; u16 ht; } Rec_GXSetTexCopySrc;
 typedef struct { u16 wd; u16 ht; int fmt; u8 mipmap; } Rec_GXSetTexCopyDst;
 typedef struct { void *dest; u8 clear; } Rec_GXCopyTex;
 typedef struct { int win_w; int win_h; int off_x; int off_y; int draw_w; int draw_h; } Rec_port_gx_set_drawable;
+static Rec_GXSetCurrentMtx g_rdd_GXSetCurrentMtx; /* last recorded call (bit 0 of g_rec_dd) */
+static Rec_GXSetNumChans g_rdd_GXSetNumChans; /* last recorded call (bit 1 of g_rec_dd) */
+static Rec_GXSetChanCtrl g_rdd_GXSetChanCtrl; /* last recorded call (bit 2 of g_rec_dd) */
+static Rec_GXSetChanAmbColor g_rdd_GXSetChanAmbColor; /* last recorded call (bit 3 of g_rec_dd) */
+static Rec_GXSetChanMatColor g_rdd_GXSetChanMatColor; /* last recorded call (bit 4 of g_rec_dd) */
+static Rec_GXSetNumTevStages g_rdd_GXSetNumTevStages; /* last recorded call (bit 5 of g_rec_dd) */
+static Rec_GXSetNumTexGens g_rdd_GXSetNumTexGens; /* last recorded call (bit 6 of g_rec_dd) */
+static Rec_GXSetAlphaCompare g_rdd_GXSetAlphaCompare; /* last recorded call (bit 7 of g_rec_dd) */
+static Rec_GXSetFog g_rdd_GXSetFog; /* last recorded call (bit 8 of g_rec_dd) */
+static Rec_GXSetBlendMode g_rdd_GXSetBlendMode; /* last recorded call (bit 9 of g_rec_dd) */
+static Rec_GXSetZMode g_rdd_GXSetZMode; /* last recorded call (bit 10 of g_rec_dd) */
+static Rec_GXSetCullMode g_rdd_GXSetCullMode; /* last recorded call (bit 11 of g_rec_dd) */
 void GXSetArray(int attr, void *base, u8 stride) {
     if (!g_rec_active) {
         gxi_GXSetArray(attr, base, stride);
@@ -295,8 +307,17 @@ void GXSetCurrentMtx(u32 id) {
         return;
     }
     {
-        Rec_GXSetCurrentMtx *r = rec_alloc(RECOP_GXSetCurrentMtx, sizeof(Rec_GXSetCurrentMtx));
+        Rec_GXSetCurrentMtx t, *r = &t;
+        memset(&t, 0, sizeof(t));
         r->id = id;
+        if ((g_rec_dd & (1u << 0)) && !memcmp(&t, &g_rdd_GXSetCurrentMtx, sizeof(t))) {
+            g_rec_ddn++;
+            return;
+        }
+        g_rdd_GXSetCurrentMtx = t;
+        g_rec_dd |= 1u << 0;
+        r = rec_alloc(RECOP_GXSetCurrentMtx, sizeof(Rec_GXSetCurrentMtx));
+        *r = t;
     }
     rec_commit();
 }
@@ -318,8 +339,17 @@ void GXSetNumChans(u8 n) {
         return;
     }
     {
-        Rec_GXSetNumChans *r = rec_alloc(RECOP_GXSetNumChans, sizeof(Rec_GXSetNumChans));
+        Rec_GXSetNumChans t, *r = &t;
+        memset(&t, 0, sizeof(t));
         r->n = n;
+        if ((g_rec_dd & (1u << 1)) && !memcmp(&t, &g_rdd_GXSetNumChans, sizeof(t))) {
+            g_rec_ddn++;
+            return;
+        }
+        g_rdd_GXSetNumChans = t;
+        g_rec_dd |= 1u << 1;
+        r = rec_alloc(RECOP_GXSetNumChans, sizeof(Rec_GXSetNumChans));
+        *r = t;
     }
     rec_commit();
 }
@@ -329,7 +359,8 @@ void GXSetChanCtrl(int chan, u8 enable, int amb_src, int mat_src, u32 light_mask
         return;
     }
     {
-        Rec_GXSetChanCtrl *r = rec_alloc(RECOP_GXSetChanCtrl, sizeof(Rec_GXSetChanCtrl));
+        Rec_GXSetChanCtrl t, *r = &t;
+        memset(&t, 0, sizeof(t));
         r->chan = chan;
         r->enable = enable;
         r->amb_src = amb_src;
@@ -337,6 +368,14 @@ void GXSetChanCtrl(int chan, u8 enable, int amb_src, int mat_src, u32 light_mask
         r->light_mask = light_mask;
         r->diff_fn = diff_fn;
         r->attn_fn = attn_fn;
+        if ((g_rec_dd & (1u << 2)) && !memcmp(&t, &g_rdd_GXSetChanCtrl, sizeof(t))) {
+            g_rec_ddn++;
+            return;
+        }
+        g_rdd_GXSetChanCtrl = t;
+        g_rec_dd |= 1u << 2;
+        r = rec_alloc(RECOP_GXSetChanCtrl, sizeof(Rec_GXSetChanCtrl));
+        *r = t;
     }
     rec_commit();
 }
@@ -346,9 +385,18 @@ void GXSetChanAmbColor(int chan, GXColor c) {
         return;
     }
     {
-        Rec_GXSetChanAmbColor *r = rec_alloc(RECOP_GXSetChanAmbColor, sizeof(Rec_GXSetChanAmbColor));
+        Rec_GXSetChanAmbColor t, *r = &t;
+        memset(&t, 0, sizeof(t));
         r->chan = chan;
         r->c = c;
+        if ((g_rec_dd & (1u << 3)) && !memcmp(&t, &g_rdd_GXSetChanAmbColor, sizeof(t))) {
+            g_rec_ddn++;
+            return;
+        }
+        g_rdd_GXSetChanAmbColor = t;
+        g_rec_dd |= 1u << 3;
+        r = rec_alloc(RECOP_GXSetChanAmbColor, sizeof(Rec_GXSetChanAmbColor));
+        *r = t;
     }
     rec_commit();
 }
@@ -358,9 +406,18 @@ void GXSetChanMatColor(int chan, GXColor c) {
         return;
     }
     {
-        Rec_GXSetChanMatColor *r = rec_alloc(RECOP_GXSetChanMatColor, sizeof(Rec_GXSetChanMatColor));
+        Rec_GXSetChanMatColor t, *r = &t;
+        memset(&t, 0, sizeof(t));
         r->chan = chan;
         r->c = c;
+        if ((g_rec_dd & (1u << 4)) && !memcmp(&t, &g_rdd_GXSetChanMatColor, sizeof(t))) {
+            g_rec_ddn++;
+            return;
+        }
+        g_rdd_GXSetChanMatColor = t;
+        g_rec_dd |= 1u << 4;
+        r = rec_alloc(RECOP_GXSetChanMatColor, sizeof(Rec_GXSetChanMatColor));
+        *r = t;
     }
     rec_commit();
 }
@@ -382,8 +439,17 @@ void GXSetNumTevStages(u8 n) {
         return;
     }
     {
-        Rec_GXSetNumTevStages *r = rec_alloc(RECOP_GXSetNumTevStages, sizeof(Rec_GXSetNumTevStages));
+        Rec_GXSetNumTevStages t, *r = &t;
+        memset(&t, 0, sizeof(t));
         r->n = n;
+        if ((g_rec_dd & (1u << 5)) && !memcmp(&t, &g_rdd_GXSetNumTevStages, sizeof(t))) {
+            g_rec_ddn++;
+            return;
+        }
+        g_rdd_GXSetNumTevStages = t;
+        g_rec_dd |= 1u << 5;
+        r = rec_alloc(RECOP_GXSetNumTevStages, sizeof(Rec_GXSetNumTevStages));
+        *r = t;
     }
     rec_commit();
 }
@@ -393,8 +459,17 @@ void GXSetNumTexGens(u8 n) {
         return;
     }
     {
-        Rec_GXSetNumTexGens *r = rec_alloc(RECOP_GXSetNumTexGens, sizeof(Rec_GXSetNumTexGens));
+        Rec_GXSetNumTexGens t, *r = &t;
+        memset(&t, 0, sizeof(t));
         r->n = n;
+        if ((g_rec_dd & (1u << 6)) && !memcmp(&t, &g_rdd_GXSetNumTexGens, sizeof(t))) {
+            g_rec_ddn++;
+            return;
+        }
+        g_rdd_GXSetNumTexGens = t;
+        g_rec_dd |= 1u << 6;
+        r = rec_alloc(RECOP_GXSetNumTexGens, sizeof(Rec_GXSetNumTexGens));
+        *r = t;
     }
     rec_commit();
 }
@@ -520,12 +595,21 @@ void GXSetAlphaCompare(int comp0, u8 ref0, int op, int comp1, u8 ref1) {
         return;
     }
     {
-        Rec_GXSetAlphaCompare *r = rec_alloc(RECOP_GXSetAlphaCompare, sizeof(Rec_GXSetAlphaCompare));
+        Rec_GXSetAlphaCompare t, *r = &t;
+        memset(&t, 0, sizeof(t));
         r->comp0 = comp0;
         r->ref0 = ref0;
         r->op = op;
         r->comp1 = comp1;
         r->ref1 = ref1;
+        if ((g_rec_dd & (1u << 7)) && !memcmp(&t, &g_rdd_GXSetAlphaCompare, sizeof(t))) {
+            g_rec_ddn++;
+            return;
+        }
+        g_rdd_GXSetAlphaCompare = t;
+        g_rec_dd |= 1u << 7;
+        r = rec_alloc(RECOP_GXSetAlphaCompare, sizeof(Rec_GXSetAlphaCompare));
+        *r = t;
     }
     rec_commit();
 }
@@ -535,13 +619,22 @@ void GXSetFog(int type, f32 startz, f32 endz, f32 nearz, f32 farz, GXColor color
         return;
     }
     {
-        Rec_GXSetFog *r = rec_alloc(RECOP_GXSetFog, sizeof(Rec_GXSetFog));
+        Rec_GXSetFog t, *r = &t;
+        memset(&t, 0, sizeof(t));
         r->type = type;
         r->startz = startz;
         r->endz = endz;
         r->nearz = nearz;
         r->farz = farz;
         r->color = color;
+        if ((g_rec_dd & (1u << 8)) && !memcmp(&t, &g_rdd_GXSetFog, sizeof(t))) {
+            g_rec_ddn++;
+            return;
+        }
+        g_rdd_GXSetFog = t;
+        g_rec_dd |= 1u << 8;
+        r = rec_alloc(RECOP_GXSetFog, sizeof(Rec_GXSetFog));
+        *r = t;
     }
     rec_commit();
 }
@@ -551,11 +644,20 @@ void GXSetBlendMode(int type, int src, int dst, int op) {
         return;
     }
     {
-        Rec_GXSetBlendMode *r = rec_alloc(RECOP_GXSetBlendMode, sizeof(Rec_GXSetBlendMode));
+        Rec_GXSetBlendMode t, *r = &t;
+        memset(&t, 0, sizeof(t));
         r->type = type;
         r->src = src;
         r->dst = dst;
         r->op = op;
+        if ((g_rec_dd & (1u << 9)) && !memcmp(&t, &g_rdd_GXSetBlendMode, sizeof(t))) {
+            g_rec_ddn++;
+            return;
+        }
+        g_rdd_GXSetBlendMode = t;
+        g_rec_dd |= 1u << 9;
+        r = rec_alloc(RECOP_GXSetBlendMode, sizeof(Rec_GXSetBlendMode));
+        *r = t;
     }
     rec_commit();
 }
@@ -565,10 +667,19 @@ void GXSetZMode(u8 enable, int func, u8 update) {
         return;
     }
     {
-        Rec_GXSetZMode *r = rec_alloc(RECOP_GXSetZMode, sizeof(Rec_GXSetZMode));
+        Rec_GXSetZMode t, *r = &t;
+        memset(&t, 0, sizeof(t));
         r->enable = enable;
         r->func = func;
         r->update = update;
+        if ((g_rec_dd & (1u << 10)) && !memcmp(&t, &g_rdd_GXSetZMode, sizeof(t))) {
+            g_rec_ddn++;
+            return;
+        }
+        g_rdd_GXSetZMode = t;
+        g_rec_dd |= 1u << 10;
+        r = rec_alloc(RECOP_GXSetZMode, sizeof(Rec_GXSetZMode));
+        *r = t;
     }
     rec_commit();
 }
@@ -611,8 +722,17 @@ void GXSetCullMode(int mode) {
         return;
     }
     {
-        Rec_GXSetCullMode *r = rec_alloc(RECOP_GXSetCullMode, sizeof(Rec_GXSetCullMode));
+        Rec_GXSetCullMode t, *r = &t;
+        memset(&t, 0, sizeof(t));
         r->mode = mode;
+        if ((g_rec_dd & (1u << 11)) && !memcmp(&t, &g_rdd_GXSetCullMode, sizeof(t))) {
+            g_rec_ddn++;
+            return;
+        }
+        g_rdd_GXSetCullMode = t;
+        g_rec_dd |= 1u << 11;
+        r = rec_alloc(RECOP_GXSetCullMode, sizeof(Rec_GXSetCullMode));
+        *r = t;
     }
     rec_commit();
 }

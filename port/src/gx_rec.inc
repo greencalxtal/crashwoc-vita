@@ -38,9 +38,8 @@ uint64_t g_rec_busy_us;           /* GX thread busy time (perf lines) */
 uint64_t g_rec_wait_us;           /* game thread waiting for it */
 unsigned g_rec_syncs;
 
-/* every record is published at once: batching them (2 KB) made no
- * difference in castle (5100 records, 27 wakeups a frame) and only made the
- * game thread wait longer at the end of the pass */
+/* records are published in batches (rec_commit): the earlier "batching made
+ * no difference" was measured in castle, which is GPU-bound */
 unsigned g_rec_nrec, g_rec_wakes;
 /* CWOC_RECHIST=1 (measurement only): records per op, and how many repeat the
  * previous record of the same op byte for byte (upper bound for dropping
@@ -62,9 +61,13 @@ static void rec_publish(void) {
 
 static void rec_block_abort(void);
 
-/* room for need bytes (the consumer frees space as it advances) */
+/* room for need bytes (the consumer frees space as it advances). The
+ * consumer position only moves forward: a stale copy is enough until it
+ * says the ring is full (no barrier per record) */
+static u32 g_rec_rc;
 static void rec_wait_space(u32 need) {
-    while (g_rec_wl + need - __atomic_load_n(&g_rec_r, __ATOMIC_ACQUIRE) > REC_BYTES) {
+    if (g_rec_wl + need - g_rec_rc <= REC_BYTES) return;
+    while (g_rec_wl + need - (g_rec_rc = __atomic_load_n(&g_rec_r, __ATOMIC_ACQUIRE)) > REC_BYTES) {
         g_ws_game = "rec_space";
         rec_publish();
         sceKernelDelayThread(50);
@@ -105,6 +108,17 @@ static inline void rec_commit(void) {
         if (g_rec_oplen[op] == n && !memcmp(g_rec_oplast[op], h + 1, n)) g_rec_opdup[op]++;
         memcpy(g_rec_oplast[op], h + 1, n);
         g_rec_oplen[op] = n;
+    }
+    {
+        /* publish every 16 records: each publish costs three barriers (DMB)
+         * on the game thread. The GX thread sees the tail at the latest at
+         * rec_sync (end of the pass) or when the ring is full, which both
+         * publish. Pass time -0.5..-1.0 ms (jungle_r 16.1 -> 15.6, earth_r
+         * 16.4 -> 15.4). CWOC_RECPUB=N for other batch sizes. */
+        static int every = -1, n;
+        if (every < 0) every = getenv("CWOC_RECPUB") ? atoi(getenv("CWOC_RECPUB")) : 16;
+        if (every > 1 && ++n < every) return;
+        n = 0;
     }
     rec_publish();
 }
@@ -167,6 +181,10 @@ typedef struct {
 } RecSkinDraw; /* + bn blend source vertices */
 typedef struct { int frame; } RecPresent;
 
+/* redundant state setters dropped while recording (gen_gx_rec.py DEDUP):
+ * which shadows hold a recorded call, reset when a recorded pass starts */
+static u32 g_rec_dd;
+unsigned g_rec_ddn;
 #define GX_REC_BODY
 #include "gx_rec_gen.h"
 
@@ -362,6 +380,7 @@ void port_gx_rec_scope(int on) {
         memcpy(g_rsh_desc, gx.vtxdesc, sizeof(g_rsh_desc));
         memcpy(g_rsh_fmt, gx.fmt, sizeof(g_rsh_fmt));
         port_gx_wp = port_gx_end = g_rec_scratch;
+        g_rec_dd = 0; /* the state was set directly since the last pass */
         g_rec_active = 1;
     } else if (!on && g_rec_active) {
         if (g_rec_inblock) rec_block_abort();
@@ -516,9 +535,10 @@ static void rec_init(void) {
 int port_gx_rec_report(char *buf, int size, int nf) {
     int n;
     if (!g_rec_on) return 0;
-    n = snprintf(buf, (size_t)size, " gxrec busy %.1f wait %.1f syncs %u recs %u wakes %u",
+    n = snprintf(buf, (size_t)size, " gxrec busy %.1f wait %.1f syncs %u recs %u (dropped %u) wakes %u",
                  g_rec_busy_us / 1000.0 / nf, g_rec_wait_us / 1000.0 / nf, g_rec_syncs / (unsigned)nf,
-                 g_rec_nrec / (unsigned)nf, g_rec_wakes / (unsigned)nf);
+                 g_rec_nrec / (unsigned)nf, g_rec_ddn / (unsigned)nf, g_rec_wakes / (unsigned)nf);
+    g_rec_ddn = 0;
     g_rec_busy_us = g_rec_wait_us = 0;
     g_rec_syncs = g_rec_nrec = g_rec_wakes = 0;
     if (g_rec_hist < 0) g_rec_hist = getenv("CWOC_RECHIST") != NULL;

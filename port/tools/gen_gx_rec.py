@@ -90,6 +90,16 @@ STORE_C = {  # wrapper: record field <- argument
     "mat34": "memcpy(r->{0}, {0}, sizeof(r->{0}));", "mat44": "memcpy(r->{0}, {0}, sizeof(r->{0}));",
     "texobj": "memcpy(&r->{0}, {0}, sizeof(r->{0}));", "lightobj": "memcpy(&r->{0}, {0}, sizeof(r->{0}));",
 }
+# state setters whose state only that one function sets: a call repeating the
+# previous recorded call of the same function changes nothing and is dropped
+# while recording (the shadow is reset when a recorded pass starts). The
+# engine sets the same lighting/material state for every model (castle: 1700
+# of 5100 records a frame). Not the TEV stage setters (GXSetTevOp overlaps
+# GXSetTevColorIn/Op...) nor loads (textures, matrices, lights).
+DEDUP = ["GXSetCurrentMtx", "GXSetNumChans", "GXSetChanCtrl", "GXSetChanAmbColor", "GXSetChanMatColor",
+         "GXSetNumTevStages", "GXSetNumTexGens", "GXSetAlphaCompare", "GXSetFog", "GXSetBlendMode", "GXSetZMode",
+         "GXSetCullMode"]
+
 ARG_C = {  # replay: argument <- record field
     "texobj": "&r->{}", "lightobj": "&r->{}",
 }
@@ -119,6 +129,8 @@ def main():
     for name, params in FUNCS:
         if params:
             out.append("typedef struct { %s } Rec_%s;" % (" ".join(FIELD_C[t].format(a) for t, a in params), name))
+    for i, name in enumerate(DEDUP):
+        out.append("static Rec_%s g_rdd_%s; /* last recorded call (bit %d of g_rec_dd) */" % (name, name, i))
     for name, params in FUNCS:
         proto = ", ".join(PARAM_C[t].format(a) for t, a in params) or "void"
         call = ", ".join(a for _, a in params)
@@ -127,6 +139,25 @@ def main():
         out.append("        gxi_%s(%s);" % (name, call))
         out.append("        return;")
         out.append("    }")
+        if name in DEDUP:
+            bit = DEDUP.index(name)
+            out.append("    {")
+            out.append("        Rec_%s t, *r = &t;" % name)
+            out.append("        memset(&t, 0, sizeof(t));")
+            for t, a in params:
+                out.append("        " + STORE_C.get(t, "r->{0} = {0};").format(a))
+            out.append("        if ((g_rec_dd & (1u << %d)) && !memcmp(&t, &g_rdd_%s, sizeof(t))) {" % (bit, name))
+            out.append("            g_rec_ddn++;")
+            out.append("            return;")
+            out.append("        }")
+            out.append("        g_rdd_%s = t;" % name)
+            out.append("        g_rec_dd |= 1u << %d;" % bit)
+            out.append("        r = rec_alloc(RECOP_%s, sizeof(Rec_%s));" % (name, name))
+            out.append("        *r = t;")
+            out.append("    }")
+            out.append("    rec_commit();")
+            out.append("}")
+            continue
         if params:
             out.append("    {")
             out.append("        Rec_%s *r = rec_alloc(RECOP_%s, sizeof(Rec_%s));" % (name, name, name))
