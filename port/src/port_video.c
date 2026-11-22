@@ -390,6 +390,8 @@ static void prof_report(int nf, uint64_t span) {
         /* shader programs created in this window (gx_gl.c ensure_program) */
         extern unsigned g_shc_n, g_shc_hit;
         extern uint64_t g_shc_us[4];
+        extern void port_gxo_report(int nf);
+        port_gxo_report(nf);
         extern uint64_t g_wk_us;
         extern unsigned g_wk_jobs;
         if (g_wk_jobs) {

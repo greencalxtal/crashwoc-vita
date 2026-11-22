@@ -128,3 +128,36 @@ void port_hook_ProcMenu(struct cursor_s *cursor, struct nupad_s *pad) {
     }
     GameSfx(PORT_SFX_YES, NULL);
 }
+
+/* ---- Fog-based far clip ----
+ * Levels draw far past the point where their linear fog is total (bonus
+ * castle: farclip 140, fog total at 50; earth: farclip 1000, fog at 100).
+ * There the geometry comes out in the fog colour, and the frame is cleared
+ * to that same colour (main.c: level_clearcolour from fogr/g/b), so it can be
+ * clipped without changing the picture: NuCameraSet caps the camera's far
+ * plane (culling + projection) at the full-fog distance plus a margin.
+ * Not done when the fog is off, while paused, or when the level has a sky
+ * (parallax objects 9/10 are drawn behind the world: clipped terrain would
+ * reveal it). Recomputed every frame from NuLightFog (some levels animate
+ * their fog). LDATA->farclip (AI, crate ranges) is untouched.
+ * CWOC_FOGCLIP=0 disables it. */
+float port_fog_farclip;
+extern s32 pause_rndr_on;
+int port_level_has_sky(void);
+
+void port_fogclip_update(float pnear, float pfar) {
+    static int on = -1;
+    float cap = 0.0f;
+    if (on < 0) {
+        const char *e = getenv("CWOC_FOGCLIP");
+        on = !(e && e[0] == '0');
+    }
+    if (on && pfar > pnear && pfar > 1.0f && pause_rndr_on == 0 && !port_level_has_sky())
+        cap = pfar * 1.05f + 2.0f;
+    if ((cap > 0.0f) != (port_fog_farclip > 0.0f)) {
+        extern void port_log(const char *fmt, ...);
+        if (cap > 0.0f) port_log("fogclip: camera far clip capped at %.1f (fog %.1f-%.1f)", cap, pnear, pfar);
+        else port_log("fogclip: off (fog %.1f-%.1f, sky %d, paused %d)", pnear, pfar, port_level_has_sky(), pause_rndr_on);
+    }
+    port_fog_farclip = cap;
+}

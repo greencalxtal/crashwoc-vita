@@ -53,6 +53,33 @@ enum { GX_RGB565 = 0, GX_RGB8 = 1, GX_RGBX8 = 2, GX_RGBA4 = 3, GX_RGBA6 = 4, GX_
 #define MAX_TEV 4
 #define MAX_TEXMAP 8
 
+
+/* CWOC_GXOUT=1: count, per function, the GX calls made outside the engine's
+ * material pass (NuMtlRender, flagged by port_in_mtlrender in nurndr.c):
+ * what would race with a material pass running on another thread */
+int port_in_mtlrender;
+static int g_gxo_on = -1;
+static const char *g_gxo_name[96];
+static unsigned g_gxo_cnt[96];
+static int g_gxo_n;
+static void gxo_hit(const char *fn) {
+    int k;
+    for (k = 0; k < g_gxo_n; k++)
+        if (g_gxo_name[k] == fn) { g_gxo_cnt[k]++; return; }
+    if (g_gxo_n < 96) { g_gxo_name[g_gxo_n] = fn; g_gxo_cnt[g_gxo_n++] = 1; }
+}
+#define GXO() do { if (g_gxo_on > 0 && !port_in_mtlrender) gxo_hit(__func__); } while (0)
+void port_gxo_report(int nf) {
+    char buf[1024];
+    int k, n = 0;
+    if (g_gxo_on <= 0 || nf <= 0) return;
+    n += snprintf(buf + n, sizeof(buf) - n, "gx outside mtlrender per frame:");
+    for (k = 0; k < g_gxo_n && n < (int)sizeof(buf) - 40; k++) {
+        if (g_gxo_cnt[k]) n += snprintf(buf + n, sizeof(buf) - n, " %s %.1f", g_gxo_name[k], g_gxo_cnt[k] / (double)nf);
+        g_gxo_cnt[k] = 0;
+    }
+    port_log("%s", buf);
+}
 /* -------------------------------------------------------------- state */
 typedef struct { int cnt, type, frac; } AttrFmt;
 
@@ -221,29 +248,29 @@ void GXTexCoord1x16(u16 i) { PUT(&i, 2); }
 
 /* -------------------------------------------------------------- vertex setup */
 static int g_plan_fmt = -1; /* vtxfmt the cached plan was built for (-1: stale) */
-void GXClearVtxDesc(void) {
+void GXClearVtxDesc(void) { GXO();
     g_plan_fmt = -1;
     memset(gx.vtxdesc, 0, sizeof(gx.vtxdesc));
     gx.vtxdesc[GX_VA_POS] = GX_DIRECT;
 }
-void GXSetVtxDesc(int attr, int type) {
+void GXSetVtxDesc(int attr, int type) { GXO();
     g_plan_fmt = -1;
     if (attr >= 0 && attr < GX_VA_MAX_ATTR) gx.vtxdesc[attr] = type;
 }
-void GXSetVtxAttrFmt(int vtxfmt, int attr, int cnt, int type, u8 frac) {
+void GXSetVtxAttrFmt(int vtxfmt, int attr, int cnt, int type, u8 frac) { GXO();
     g_plan_fmt = -1;
     if (vtxfmt < 0 || vtxfmt >= MAX_VTXFMT || attr < 0 || attr >= GX_VA_MAX_ATTR) return;
     gx.fmt[vtxfmt][attr].cnt = cnt;
     gx.fmt[vtxfmt][attr].type = type;
     gx.fmt[vtxfmt][attr].frac = frac;
 }
-void GXSetArray(int attr, void *base, u8 stride) {
+void GXSetArray(int attr, void *base, u8 stride) { GXO();
     g_plan_fmt = -1;
     if (attr < 0 || attr >= GX_VA_MAX_ATTR) return;
     gx.array_base[attr] = base;
     gx.array_stride[attr] = stride;
 }
-void GXInvalidateVtxCache(void) {}
+void GXInvalidateVtxCache(void) { GXO();}
 
 static int comp_size(int type) {
     switch (type) {
@@ -1241,7 +1268,7 @@ static void exec_upload(int slot, int w, int h, u8 *rgba) {
     free(rgba);
 }
 
-void GXInitTexObj(void *obj, void *image, u16 width, u16 height, int format, int wrap_s, int wrap_t, u8 mipmap) {
+void GXInitTexObj(void *obj, void *image, u16 width, u16 height, int format, int wrap_s, int wrap_t, u8 mipmap) { GXO();
     PortTexObj *t = obj;
     memset(t, 0, sizeof(*t));
     t->image = image;
@@ -1253,23 +1280,23 @@ void GXInitTexObj(void *obj, void *image, u16 width, u16 height, int format, int
     t->mipmap = mipmap;
     t->magic = TEXOBJ_MAGIC;
 }
-void GXInitTexObjWrapMode(void *obj, int s, int t) {
+void GXInitTexObjWrapMode(void *obj, int s, int t) { GXO();
     PortTexObj *o = obj;
     o->wrap_s = (u8)s;
     o->wrap_t = (u8)t;
 }
-void GXInitTexObjLOD(void *obj, int min, int mag, float minlod, float maxlod, float bias, u8 clamp, u8 edge, int aniso) {
+void GXInitTexObjLOD(void *obj, int min, int mag, float minlod, float maxlod, float bias, u8 clamp, u8 edge, int aniso) { GXO();
     (void)obj; (void)min; (void)mag; (void)minlod; (void)maxlod; (void)bias; (void)clamp; (void)edge; (void)aniso;
 }
-void GXLoadTexObj(void *obj, int map) {
+void GXLoadTexObj(void *obj, int map) { GXO();
     if (map < 0 || map >= MAX_TEXMAP) return;
     if (gx.texmap_valid[map] && !memcmp(&gx.texmap[map], obj, sizeof(PortTexObj))) return;
     g_dirty = 1;
     gx.texmap[map] = *(PortTexObj *)obj;
     gx.texmap_valid[map] = gx.texmap[map].magic == TEXOBJ_MAGIC;
 }
-void GXInvalidateTexAll(void) { g_dirty = 1;}
-u32 GXGetTexBufferSize(u16 w, u16 h, u32 fmt, u8 mipmap, u8 maxlod) {
+void GXInvalidateTexAll(void) { GXO(); g_dirty = 1;}
+u32 GXGetTexBufferSize(u16 w, u16 h, u32 fmt, u8 mipmap, u8 maxlod) { GXO();
     int size = tex_size((int)fmt, w, h);
     if (mipmap) {
         int lw = w, lh = h, l;
@@ -1285,22 +1312,22 @@ u32 GXGetTexBufferSize(u16 w, u16 h, u32 fmt, u8 mipmap, u8 maxlod) {
 
 /* -------------------------------------------------------------- matrices */
 static unsigned g_mtx_ver = 1; /* bumped by every matrix load/select (seg_add) */
-void GXLoadPosMtxImm(const float m[3][4], u32 id) {
+void GXLoadPosMtxImm(const float m[3][4], u32 id) { GXO();
     int slot = (int)(id / 3);
     if (slot < 0 || slot >= MAX_POSMTX) return;
     memcpy(gx.posmtx[slot], m, sizeof(gx.posmtx[slot]));
     g_mtx_ver++;
 }
-void GXLoadNrmMtxImm(const float m[3][4], u32 id) {
+void GXLoadNrmMtxImm(const float m[3][4], u32 id) { GXO();
     int slot = (int)(id / 3), r, c;
     if (slot < 0 || slot >= MAX_POSMTX) return;
     for (r = 0; r < 3; r++)
         for (c = 0; c < 3; c++) gx.nrmmtx[slot][r][c] = m[r][c];
     g_mtx_ver++;
 }
-void GXLoadTexMtxImm(const float m[3][4], u32 id, int type) { (void)m; (void)id; (void)type; }
-void GXSetCurrentMtx(u32 id) { gx.cur_posmtx = (int)(id / 3); g_mtx_ver++; }
-void GXSetProjection(const float m[4][4], int type) {
+void GXLoadTexMtxImm(const float m[3][4], u32 id, int type) { GXO(); (void)m; (void)id; (void)type; }
+void GXSetCurrentMtx(u32 id) { GXO(); gx.cur_posmtx = (int)(id / 3); g_mtx_ver++; }
+void GXSetProjection(const float m[4][4], int type) { GXO();
     if (gx.proj_ortho == type && !memcmp(gx.proj, m, sizeof(gx.proj))) return;
     g_dirty = 1;
     memcpy(gx.proj, m, sizeof(gx.proj));
@@ -1308,8 +1335,8 @@ void GXSetProjection(const float m[4][4], int type) {
 }
 
 /* -------------------------------------------------------------- lighting */
-void GXSetNumChans(u8 n) { if (gx.num_chans != n) { gx.num_chans = n; g_dirty = 1; } }
-void GXSetChanCtrl(int chan, u8 enable, int amb_src, int mat_src, u32 light_mask, int diff_fn, int attn_fn) {
+void GXSetNumChans(u8 n) { GXO(); if (gx.num_chans != n) { gx.num_chans = n; g_dirty = 1; } }
+void GXSetChanCtrl(int chan, u8 enable, int amb_src, int mat_src, u32 light_mask, int diff_fn, int attn_fn) { GXO();
     ChanCtrl c;
     c.enable = enable;
     c.amb_src = amb_src;
@@ -1326,19 +1353,19 @@ void GXSetChanCtrl(int chan, u8 enable, int amb_src, int mat_src, u32 light_mask
 /* NOTE: amb/mat keep the always-dirty form: the conditional form changes the
  * hub lighting (Coco renders dark) for a reason not found yet (suspect an
  * uninitialised read in game code); see VITA_PORT_CHECKPOINT.md */
-void GXSetChanAmbColor(int chan, GXColor c) { (void)chan; if (memcmp(&gx.amb_color, &c, sizeof(c))) { gx.amb_color = c; g_dirty = 1; } }
-void GXSetChanMatColor(int chan, GXColor c) { (void)chan; if (memcmp(&gx.mat_color, &c, sizeof(c))) { gx.mat_color = c; g_dirty = 1; } }
-void GXInitLightPos(void *obj, f32 x, f32 y, f32 z) {
+void GXSetChanAmbColor(int chan, GXColor c) { GXO(); (void)chan; if (memcmp(&gx.amb_color, &c, sizeof(c))) { gx.amb_color = c; g_dirty = 1; } }
+void GXSetChanMatColor(int chan, GXColor c) { GXO(); (void)chan; if (memcmp(&gx.mat_color, &c, sizeof(c))) { gx.mat_color = c; g_dirty = 1; } }
+void GXInitLightPos(void *obj, f32 x, f32 y, f32 z) { GXO();
     PortLightObj *l = obj;
     l->pos[0] = x; l->pos[1] = y; l->pos[2] = z;
     l->magic = LIGHTOBJ_MAGIC;
 }
-void GXInitLightDir(void *obj, f32 x, f32 y, f32 z) {
+void GXInitLightDir(void *obj, f32 x, f32 y, f32 z) { GXO();
     PortLightObj *l = obj;
     l->dir[0] = x; l->dir[1] = y; l->dir[2] = z;
 }
-void GXInitLightColor(void *obj, GXColor c) { ((PortLightObj *)obj)->color = c; }
-void GXLoadLightObjImm(void *obj, u32 light) {
+void GXInitLightColor(void *obj, GXColor c) { GXO(); ((PortLightObj *)obj)->color = c; }
+void GXLoadLightObjImm(void *obj, u32 light) { GXO();
     int i;
     PortLightObj *l = obj;
     for (i = 0; i < 8; i++)
@@ -1352,12 +1379,12 @@ void GXLoadLightObjImm(void *obj, u32 light) {
 }
 
 /* -------------------------------------------------------------- TEV */
-void GXSetNumTevStages(u8 n) { if (gx.num_tev != n) { gx.num_tev = n; g_dirty = 1; } }
-void GXSetNumTexGens(u8 n) { if (gx.num_texgens != n) { gx.num_texgens = n; g_dirty = 1; } }
-void GXSetTexCoordGen2(int dst, int func, int src, u32 mtx, u8 normalize, u32 postmtx) {
+void GXSetNumTevStages(u8 n) { GXO(); if (gx.num_tev != n) { gx.num_tev = n; g_dirty = 1; } }
+void GXSetNumTexGens(u8 n) { GXO(); if (gx.num_texgens != n) { gx.num_texgens = n; g_dirty = 1; } }
+void GXSetTexCoordGen2(int dst, int func, int src, u32 mtx, u8 normalize, u32 postmtx) { GXO();
     (void)dst; (void)func; (void)src; (void)mtx; (void)normalize; (void)postmtx;
 }
-void GXSetTevOrder(int stage, int coord, int map, int color) {
+void GXSetTevOrder(int stage, int coord, int map, int color) { GXO();
     if (stage < 0 || stage >= 16) return;
     if (gx.tev[stage].texcoord == (coord & 0xFF) && gx.tev[stage].texmap == (map & 0xFF) && gx.tev[stage].channel == (color & 0xFF)) return;
     g_dirty = 1;
@@ -1365,28 +1392,28 @@ void GXSetTevOrder(int stage, int coord, int map, int color) {
     gx.tev[stage].texmap = map & 0xFF;
     gx.tev[stage].channel = color & 0xFF;
 }
-void GXSetTevColorIn(int stage, int a, int b, int c, int d) {
+void GXSetTevColorIn(int stage, int a, int b, int c, int d) { GXO();
     TevStage *t = &gx.tev[stage & 15], old = *t;
     t->color_in[0] = a; t->color_in[1] = b; t->color_in[2] = c; t->color_in[3] = d;
     if (memcmp(&old, t, sizeof(old))) g_dirty = 1;
 }
-void GXSetTevAlphaIn(int stage, int a, int b, int c, int d) {
+void GXSetTevAlphaIn(int stage, int a, int b, int c, int d) { GXO();
     TevStage *t = &gx.tev[stage & 15], old = *t;
     t->alpha_in[0] = a; t->alpha_in[1] = b; t->alpha_in[2] = c; t->alpha_in[3] = d;
     if (memcmp(&old, t, sizeof(old))) g_dirty = 1;
 }
-void GXSetTevColorOp(int stage, int op, int bias, int scale, int clamp, int reg) {
+void GXSetTevColorOp(int stage, int op, int bias, int scale, int clamp, int reg) { GXO();
     TevStage *t = &gx.tev[stage & 15], old = *t;
     t->color_op = op & 1; t->color_bias = bias; t->color_scale = scale; t->color_clamp = clamp; t->color_reg = reg;
     if (memcmp(&old, t, sizeof(old))) g_dirty = 1;
 }
-void GXSetTevAlphaOp(int stage, int op, int bias, int scale, int clamp, int reg) {
+void GXSetTevAlphaOp(int stage, int op, int bias, int scale, int clamp, int reg) { GXO();
     TevStage *t = &gx.tev[stage & 15], old = *t;
     t->alpha_op = op & 1; t->alpha_bias = bias; t->alpha_scale = scale; t->alpha_clamp = clamp; t->alpha_reg = reg;
     if (memcmp(&old, t, sizeof(old))) g_dirty = 1;
 }
 /* SDK GXSetTevOp presets; stage 0 uses the rasterised colour as "previous". */
-void GXSetTevOp(int stage, int mode) {
+void GXSetTevOp(int stage, int mode) { GXO();
     int carg = stage == 0 ? 10 : 0, aarg = stage == 0 ? 5 : 0;
     switch (mode) {
     case 0: /* MODULATE */
@@ -1413,15 +1440,15 @@ void GXSetTevOp(int stage, int mode) {
     GXSetTevColorOp(stage, 0, 0, 0, 1, 0);
     GXSetTevAlphaOp(stage, 0, 0, 0, 1, 0);
 }
-void GXSetTevColor(int reg, GXColor c) { (void)reg; (void)c; } /* not part of the captured state */
+void GXSetTevColor(int reg, GXColor c) { GXO(); (void)reg; (void)c; } /* not part of the captured state */
 
 /* -------------------------------------------------------------- pixel state */
-void GXSetAlphaCompare(int comp0, u8 ref0, int op, int comp1, u8 ref1) {
+void GXSetAlphaCompare(int comp0, u8 ref0, int op, int comp1, u8 ref1) { GXO();
     if (gx.alpha_comp0 == comp0 && gx.alpha_ref0 == ref0 && gx.alpha_op == op && gx.alpha_comp1 == comp1 && gx.alpha_ref1 == ref1) return;
     g_dirty = 1;
     gx.alpha_comp0 = comp0; gx.alpha_ref0 = ref0; gx.alpha_op = op; gx.alpha_comp1 = comp1; gx.alpha_ref1 = ref1;
 }
-void GXSetFog(int type, f32 startz, f32 endz, f32 nearz, f32 farz, GXColor color) {
+void GXSetFog(int type, f32 startz, f32 endz, f32 nearz, f32 farz, GXColor color) { GXO();
     static int logfog = -1;
     (void)nearz; (void)farz;
     if (type == gx.fog_type && startz == gx.fog_start && endz == gx.fog_end && !memcmp(&color, &gx.fog_color, sizeof(color)))
@@ -1437,7 +1464,7 @@ void GXSetFog(int type, f32 startz, f32 endz, f32 nearz, f32 farz, GXColor color
     gx.fog_end = endz;
     gx.fog_color = color;
 }
-void GXSetBlendMode(int type, int src, int dst, int op) {
+void GXSetBlendMode(int type, int src, int dst, int op) { GXO();
     (void)op;
     if (gx.blend_type == type && gx.blend_src == src && gx.blend_dst == dst) return;
     g_dirty = 1;
@@ -1445,7 +1472,7 @@ void GXSetBlendMode(int type, int src, int dst, int op) {
     gx.blend_src = src;
     gx.blend_dst = dst;
 }
-void GXSetZMode(u8 enable, int func, u8 update) {
+void GXSetZMode(u8 enable, int func, u8 update) { GXO();
     if (gx.z_enable == enable && gx.z_func == func && gx.z_update == update) return;
     g_dirty = 1;
     gx.z_enable = enable;
@@ -1454,27 +1481,27 @@ void GXSetZMode(u8 enable, int func, u8 update) {
 }
 /* (the setters only mark the state dirty when a captured value changes:
  * capture_state + compare runs on every draw after a dirty mark) */
-void GXSetZCompLoc(u8 before_tex) { (void)before_tex; }
-void GXSetAlphaUpdate(u8 enable) { if (gx.alpha_update != enable) { g_dirty = 1; gx.alpha_update = enable; } }
-void GXSetColorUpdate(u8 enable) { (void)enable; }
-void GXSetCullMode(int mode) { if (gx.cull != mode) { g_dirty = 1; gx.cull = mode; } }
-void GXSetClipMode(int mode) { (void)mode; }
-void GXSetDither(u8 d) { (void)d; }
-void GXSetViewport(f32 left, f32 top, f32 wd, f32 ht, f32 nearz, f32 farz) {
+void GXSetZCompLoc(u8 before_tex) { GXO(); (void)before_tex; }
+void GXSetAlphaUpdate(u8 enable) { GXO(); if (gx.alpha_update != enable) { g_dirty = 1; gx.alpha_update = enable; } }
+void GXSetColorUpdate(u8 enable) { GXO(); (void)enable; }
+void GXSetCullMode(int mode) { GXO(); if (gx.cull != mode) { g_dirty = 1; gx.cull = mode; } }
+void GXSetClipMode(int mode) { GXO(); (void)mode; }
+void GXSetDither(u8 d) { GXO(); (void)d; }
+void GXSetViewport(f32 left, f32 top, f32 wd, f32 ht, f32 nearz, f32 farz) { GXO();
     if (gx.vp[0] == left && gx.vp[1] == top && gx.vp[2] == wd && gx.vp[3] == ht && gx.vp[4] == nearz && gx.vp[5] == farz) return;
     g_dirty = 1;
     gx.vp[0] = left; gx.vp[1] = top; gx.vp[2] = wd; gx.vp[3] = ht; gx.vp[4] = nearz; gx.vp[5] = farz;
 }
-void GXSetScissor(u32 left, u32 top, u32 wd, u32 ht) {
+void GXSetScissor(u32 left, u32 top, u32 wd, u32 ht) { GXO();
     if (gx.scissor[0] == (int)left && gx.scissor[1] == (int)top && gx.scissor[2] == (int)wd && gx.scissor[3] == (int)ht) return;
     g_dirty = 1;
     gx.scissor[0] = (int)left; gx.scissor[1] = (int)top; gx.scissor[2] = (int)wd; gx.scissor[3] = (int)ht;
 }
-void GXSetCopyClear(GXColor color, u32 z) { (void)z; gx.copy_clear = color; } /* used by the copy, not draws */
-void GXPixModeSync(void) {}
-void GXDrawDone(void) {}
-void GXFlush(void) {}
-void GXCopyDisp(void *dest, u8 clear) { (void)dest; (void)clear; }
+void GXSetCopyClear(GXColor color, u32 z) { GXO(); (void)z; gx.copy_clear = color; } /* used by the copy, not draws */
+void GXPixModeSync(void) { GXO();}
+void GXDrawDone(void) { GXO();}
+void GXFlush(void) { GXO();}
+void GXCopyDisp(void *dest, u8 clear) { GXO(); (void)dest; (void)clear; }
 
 /* -------------------------------------------------------------- draw */
 static GLenum blend_factor(int f, int is_src) {
@@ -3251,7 +3278,7 @@ indices:
     return 1;
 }
 
-void port_gs_draw_indexed(int strips, const short *idx, u32 count, const void *verts, int constcol, u32 col) {
+void port_gs_draw_indexed(int strips, const short *idx, u32 count, const void *verts, int constcol, u32 col) { GXO();
     const PortGSVertex *vl = verts;
     const float (*m)[4] = gx.posmtx[gx.cur_posmtx];
     const float (*q)[3] = gx.nrmmtx[gx.cur_posmtx];
@@ -3363,7 +3390,7 @@ void port_gs_draw_indexed(int strips, const short *idx, u32 count, const void *v
 typedef struct { float x, y, z, nx, ny, nz; } PortGSVertexNorm;
 typedef struct { float x, y, z, w[2], ix[3], nx, ny, nz; u32 diffuse; float u, v; } PortGSVertexSkin;
 
-void port_gs_draw_tskin(const void *vertlist, int n, const void *srcverts, const short *idx) {
+void port_gs_draw_tskin(const void *vertlist, int n, const void *srcverts, const short *idx) { GXO();
     const PortGSVertexNorm *pv = vertlist;
     const PortGSVertexSkin *sv = srcverts;
     const float (*m)[4] = gx.posmtx[gx.cur_posmtx];
@@ -3421,7 +3448,7 @@ void port_gs_draw_tskin(const void *vertlist, int n, const void *srcverts, const
  * source vertex is skinned and transformed once per batch and the triangles
  * are drawn indexed. Same float operations per vertex as the original path. */
 typedef struct { float x, y, z; } PortVec3;
-int port_gs_skin_fused(void) { /* CWOC_NOFUSE=1: the original two passes (comparison) */
+int port_gs_skin_fused(void) { GXO(); /* CWOC_NOFUSE=1: the original two passes (comparison) */
     static int on = -1;
     if (on < 0) on = getenv("CWOC_NOFUSE") == NULL;
     return on;
@@ -3658,7 +3685,7 @@ static void gx_block_done(void) {
     port_gx_wp = g_fifo;
 }
 
-void GXBegin(int prim, int vtxfmt, u16 nverts) {
+void GXBegin(int prim, int vtxfmt, u16 nverts) { GXO();
     if (g_in_begin && port_gx_wp != g_fifo)
         port_log("gx: GXBegin while a block is incomplete (%d bytes)", (int)(port_gx_wp - g_fifo));
     g_prim = prim;
@@ -3674,18 +3701,18 @@ void GXBegin(int prim, int vtxfmt, u16 nverts) {
     g_in_begin = nverts > 0 && g_vs > 0 && g_need <= (int)sizeof(g_fifo) - 64;
     port_gx_end = g_in_begin ? g_fifo + g_need : g_fifo;
 }
-void GXEnd(void) {}
+void GXEnd(void) { GXO();}
 
 /* -------------------------------------------------------------- EFB copies */
-void GXSetTexCopySrc(u16 left, u16 top, u16 wd, u16 ht) {
+void GXSetTexCopySrc(u16 left, u16 top, u16 wd, u16 ht) { GXO();
     gx.copy_src[0] = left; gx.copy_src[1] = top; gx.copy_src[2] = wd; gx.copy_src[3] = ht;
 }
-void GXSetTexCopyDst(u16 wd, u16 ht, int fmt, u8 mipmap) {
+void GXSetTexCopyDst(u16 wd, u16 ht, int fmt, u8 mipmap) { GXO();
     gx.copy_dst_w = wd; gx.copy_dst_h = ht; gx.copy_fmt = fmt; gx.copy_mip = mipmap;
 }
 /* Reads back the drawable and stores it in GameCube RGB565 tiled layout, so a
  * later GXInitTexObj/GXLoadTexObj of 'dest' decodes it like any texture. */
-void GXCopyTex(void *dest, u8 clear) {
+void GXCopyTex(void *dest, u8 clear) { GXO();
     int w = gx.copy_dst_w, h = gx.copy_dst_h, x;
     float sx = (float)g_draw_w / 640.0f, sy = (float)g_draw_h / 448.0f;
     int rw = (int)(gx.copy_src[2] * sx), rh = (int)(gx.copy_src[3] * sy);
@@ -3741,6 +3768,7 @@ void port_gx_begin_frame(void) {
 }
 
 void port_gx_init(void) {
+    g_gxo_on = getenv("CWOC_GXOUT") != NULL;
     memset(&gx, 0, sizeof(gx));
     port_prof_calibrate();
     rq_init();
