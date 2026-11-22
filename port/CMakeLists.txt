@@ -177,6 +177,12 @@ if(PORT_VITA)
   target_compile_options(cwoc_objs PRIVATE -g ${PORT_OPT} -fno-short-enums)
   target_compile_options(crashwoc PRIVATE -g ${PORT_OPT} -fno-short-enums)
   target_link_options(crashwoc PRIVATE -Wl,--no-enum-size-warning)
+  # vita-elf-create appends ~4 KB of module data after the text segment and
+  # fails ("segment 1 overlaps") when the text ends just below the 64 KB
+  # boundary of the data segment. The SDK linker script (armvita.x) reserves
+  # __sce_headroom bytes there; 8 KB always leaves room, whatever the code
+  # size (the .rodata pad in port_main.c only moved the boundary).
+  target_link_options(crashwoc PRIVATE -Wl,--defsym,__sce_headroom=0x2000)
   target_link_libraries(crashwoc
     vitaGL vitashark SceShaccCgExt mathneon taihen_stub SceShaccCg_stub
     SDL2 SceKernelDmacMgr_stub SceGxm_stub SceDisplay_stub SceCtrl_stub SceAppMgr_stub
