@@ -441,6 +441,7 @@ static void rec_replay(int op, void *p) {
 
 static int rec_thread(void *arg) {
     (void)arg;
+    { extern void port_thread_register(const char *name); port_thread_register("gxrec"); }
 #ifdef PORT_VITA
     sceKernelChangeThreadCpuAffinityMask(0, SCE_KERNEL_CPU_MASK_USER_2);
 #endif

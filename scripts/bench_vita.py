@@ -90,7 +90,7 @@ def upload_env(src, out):
 def env_text(name, level, frames, extra=()):
     lines = ["# benchmark run (written by scripts/bench_vita.py); delete this file for normal play",
              "CWOC_SAVE=ux0:data/crashwoc/save_bench", "CWOC_SKIP_LOGOS=1", "CWOC_INTRO=0",
-             "CWOC_KEEPAWAKE=1", "CWOC_LONGFRAME=100", "CWOC_FRAMES=%d" % frames]
+             "CWOC_KEEPAWAKE=1", "CWOC_LONGFRAME=100", "CWOC_PADOFF=1", "CWOC_FRAMES=%d" % frames]
     inp = []
     if level is not None:
         lines += ["CWOC_WARP=%d@200" % level]

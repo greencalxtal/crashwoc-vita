@@ -78,6 +78,26 @@ unsigned int PADRead(PortPADStatus *status) {
     s->stickY = vaxis(c.ly, 1);
     s->substickX = vaxis(c.rx, 0);
     s->substickY = vaxis(c.ry, 1);
+    {
+        /* CWOC_PADOFF=1 (unattended measurements): only the scripted input
+         * (CWOC_INPUT), so a touched console or a drifting stick cannot move
+         * Crash during a benchmark */
+        static int off = -1;
+        if (off < 0) off = getenv("CWOC_PADOFF") && getenv("CWOC_PADOFF")[0] == '1';
+        if (off) {
+            /* say when the real controls were not at rest (a hand on the
+             * console, or stick drift past the dead zone) */
+            static unsigned n_log;
+            if ((c.buttons || s->stickX || s->stickY || s->substickX || s->substickY) && n_log < 20 &&
+                port_frame_count() % 60 == 0) {
+                n_log++;
+                port_log("pad: real input ignored (CWOC_PADOFF) at frame %d: buttons %08x, sticks %d,%d %d,%d (raw %u,%u %u,%u)",
+                         port_frame_count(), c.buttons, s->stickX, s->stickY, s->substickX, s->substickY, c.lx, c.ly, c.rx, c.ry);
+            }
+            memset(s, 0, sizeof(*s));
+            s->err = 0;
+        }
+    }
     script_apply_fwd(s);
     return 0x80000000u;
 }

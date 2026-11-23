@@ -2854,6 +2854,7 @@ unsigned g_wk_jobs;
 
 static int wk_thread(void *arg) {
     (void)arg;
+    { extern void port_thread_register(const char *name); port_thread_register("gxxform"); }
 #ifdef PORT_VITA
     sceKernelChangeThreadCpuAffinityMask(0, SCE_KERNEL_CPU_MASK_USER_2);
 #endif
@@ -3117,6 +3118,7 @@ void port_video_gl_release(void);
 
 static int rt_thread(void *arg) {
     (void)arg;
+    { extern void port_thread_register(const char *name); port_thread_register("gxrender"); }
 #ifdef PORT_VITA
     sceKernelChangeThreadCpuAffinityMask(0, SCE_KERNEL_CPU_MASK_USER_1);
 #endif

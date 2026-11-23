@@ -5,6 +5,7 @@
 #include "port_prof.h"
 #ifdef PORT_VITA
 #include <psp2/kernel/processmgr.h>
+#include <psp2/kernel/threadmgr.h>
 #endif
 #include <SDL2/SDL.h>
 #include <stdarg.h>
@@ -25,6 +26,8 @@ static int g_headless_frames = -1;
 int port_frame_count(void) { return g_frames; }
 
 /* GXRenderModeObj (NTSC 640x448 EFB) for GS_Init. */
+void port_thread_register(const char *name); /* CPU census (below) */
+
 static struct {
     unsigned int viTVmode;
     unsigned short fbWidth, efbHeight, xfbHeight, viXOrigin, viYOrigin, viWidth, viHeight;
@@ -183,15 +186,20 @@ void port_platform_init(int argc, char **argv) {
     g_win_h = h;
     apply_drawable();
 #endif
+    port_thread_register("game");
     port_gx_init();
     PADInit();
     g_last_report = SDL_GetTicks();
 }
 
-/* sampled sub-timers for the material pass (numtl.c / nurndr.c MSUB_*) */
-uint64_t g_msub[8];
-static uint64_t g_msub_t0[8];
-static unsigned g_msub_c[8], g_msub_r[8];
+/* sub-timers for the material pass (numtl.c / nurndr.c MSUB_*).
+ * CWOC_MSUB=1: sampled (1 call in `rate`); CWOC_MSUB=2: every call (exact,
+ * no sampling bias; each call costs two timer reads, ~1.4 us, counted in
+ * the calls column). Slots 8+: item types and their parts. */
+#define MSUB_N 14
+uint64_t g_msub[MSUB_N];
+static uint64_t g_msub_t0[MSUB_N];
+static unsigned g_msub_c[MSUB_N], g_msub_r[MSUB_N], g_msub_calls[MSUB_N];
 static int g_msub_on = -1;
 void port_msub_begin(int k, int rate) {
     /* off by default (each sample is two timer syscalls on the Vita):
@@ -200,15 +208,68 @@ void port_msub_begin(int k, int rate) {
 #ifdef PORT_MSUB_DEFAULT
         g_msub_on = PORT_MSUB_DEFAULT;
 #else
-        g_msub_on = getenv("CWOC_MSUB") != NULL;
+        g_msub_on = getenv("CWOC_MSUB") ? atoi(getenv("CWOC_MSUB")) : 0;
+        if (g_msub_on < 0) g_msub_on = 0;
 #endif
     }
-    if (!g_msub_on) { g_msub_t0[k] = 0; return; }
+    if (!g_msub_on || (unsigned)k >= MSUB_N) return;
+    if (g_msub_on == 2) rate = 1;
+    g_msub_calls[k]++;
     g_msub_r[k] = (unsigned)rate;
     g_msub_t0[k] = (++g_msub_c[k] % (unsigned)rate) == 0 ? port_prof_now() : 0;
 }
 void port_msub_end(int k) {
-    if (g_msub_t0[k]) g_msub[k] += (port_prof_now() - g_msub_t0[k]) * g_msub_r[k];
+    if ((unsigned)k < MSUB_N && g_msub_t0[k]) g_msub[k] += (port_prof_now() - g_msub_t0[k]) * g_msub_r[k];
+}
+
+/* CPU census: each port thread registers itself; every report line gives
+ * each one's CPU time (runClocks), its share of the window, its core and its
+ * preemptions, so the free time per core is known (CWOC_CPUCENSUS=0: off). */
+#define CENSUS_N 8
+static struct { const char *name; int uid; uint64_t run0; unsigned pre0; } g_census[CENSUS_N];
+static int g_census_n;
+void port_thread_register(const char *name) {
+#ifdef PORT_VITA
+    int i, uid = sceKernelGetThreadId();
+    for (i = 0; i < g_census_n; i++)
+        if (g_census[i].uid == uid) return;
+    if (g_census_n < CENSUS_N) {
+        g_census[g_census_n].name = name;
+        g_census[g_census_n].uid = uid;
+        g_census_n++;
+    }
+#else
+    (void)name;
+#endif
+}
+static int census_report(char *buf, int size, uint64_t span_us) {
+    int n = 0;
+#ifdef PORT_VITA
+    static int on = -1;
+    int i;
+    if (on < 0) on = !(getenv("CWOC_CPUCENSUS") && getenv("CWOC_CPUCENSUS")[0] == '0');
+    if (!on || !span_us) return 0;
+    n += snprintf(buf + n, size - n, "cpu:");
+    for (i = 0; i < g_census_n && n < size - 64; i++) {
+        SceKernelThreadInfo info;
+        uint64_t run;
+        unsigned pre;
+        memset(&info, 0, sizeof(info));
+        info.size = sizeof(info);
+        if (sceKernelGetThreadInfo(g_census[i].uid, &info) < 0) continue;
+        run = (uint64_t)info.runClocks;
+        pre = info.intrPreemptCount + info.threadPreemptCount;
+        if (g_census[i].run0)
+            n += snprintf(buf + n, size - n, " %s %.0f%% (core %d, %u preempt)", g_census[i].name,
+                          100.0 * (double)(run - g_census[i].run0) / (double)span_us, info.lastExecutedCpuId,
+                          pre - g_census[i].pre0);
+        g_census[i].run0 = run;
+        g_census[i].pre0 = pre;
+    }
+#else
+    (void)buf; (void)size; (void)span_us;
+#endif
+    return n;
 }
 
 void port_gx_stats_draw(int nverts) {
@@ -432,11 +493,14 @@ static void prof_report(int nf, uint64_t span) {
                 }
             }
             if (g_msub_on > 0) {
-                static const char *mn[8] = {"m3d", "mstate", "wmtx", "shsetup", "draw", "ot", "other", "item"};
+                static const char *mn[MSUB_N] = {"m3d", "mstate", "wmtx", "shsetup", "draw", "ot", "other", "item",
+                                                 "geom", "skin", "2d/face", "skinsetup", "skindraw", "lights"};
                 n += snprintf(buf + n, sizeof(buf) - n, " | mtl:");
-                for (i = 0; i < 8; i++) {
-                    n += snprintf(buf + n, sizeof(buf) - n, " %s %.1f", mn[i], g_msub[i] / 1000.0 / nf);
+                for (i = 0; i < MSUB_N; i++) {
+                    n += snprintf(buf + n, sizeof(buf) - n, " %s %.2f(%u)", mn[i], g_msub[i] / 1000.0 / nf,
+                                  g_msub_calls[i] / (unsigned)nf);
                     g_msub[i] = 0;
+                    g_msub_calls[i] = 0;
                 }
             }
         }
@@ -582,8 +646,14 @@ void DEMOSwapBuffers(void) {
                  port_gx_take_draw_calls() / (nf ? nf : 1), g_verts / (nf ? nf : 1));
         {
             uint64_t t = port_prof_now();
-            if (prof_last) prof_report(nf, t - prof_last);
-            else memset(g_prof, 0, sizeof(g_prof));
+            if (prof_last) {
+                char cbuf[512];
+                prof_report(nf, t - prof_last);
+                if (census_report(cbuf, sizeof(cbuf), t - prof_last) > 0) port_log("%s", cbuf);
+            } else {
+                memset(g_prof, 0, sizeof(g_prof));
+                census_report(NULL, 0, 0);
+            }
             prof_last = t;
         }
         g_draws = g_verts = 0;
