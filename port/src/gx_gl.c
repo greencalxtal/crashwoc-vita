@@ -1032,6 +1032,71 @@ static void bind_tex(int unit, GLuint tex) {
     }
 }
 
+/* render thread: the small 3D target of CWOC_RES3D (port_gx_begin_frame) */
+static int g_rt_lowres;            /* the 3D target is bound */
+static GLuint g_r3_fbo, g_r3_tex, g_r3_rb;
+static int g_r3_w, g_r3_h, g_r3_dw, g_r3_dh; /* target size, and the drawable it was made for */
+static unsigned g_r3_frames, g_r3_hud, g_r3_late;
+static int g_res3d_pct_rt;         /* copy of the percent for the render thread (set at init) */
+
+/* a window rectangle (GL, bottom-left origin) mapped into the 3D target */
+static void r3_map(int *x, int *y, int *w, int *h) {
+    float fx = (float)g_r3_w / (float)g_draw_w, fy = (float)g_r3_h / (float)g_draw_h;
+    int ox = g_off_x, oy = g_win_h - g_off_y - g_draw_h;
+    int x0 = (int)((*x - ox) * fx + 0.5f), x1 = (int)((*x + *w - ox) * fx + 0.5f);
+    int y0 = (int)((*y - oy) * fy + 0.5f), y1 = (int)((*y + *h - oy) * fy + 0.5f);
+    *x = x0; *y = y0; *w = x1 - x0; *h = y1 - y0;
+}
+
+/* bind the 3D target (made, or remade when the drawable changed size) */
+static void r3_bind(void) {
+    int w = (g_draw_w * g_res3d_pct_rt + 50) / 100, h = (g_draw_h * g_res3d_pct_rt + 50) / 100;
+    if (!g_r3_fbo || g_r3_dw != g_draw_w || g_r3_dh != g_draw_h) {
+        if (g_r3_fbo) {
+            glDeleteFramebuffers(1, &g_r3_fbo);
+            glDeleteRenderbuffers(1, &g_r3_rb);
+            glDeleteTextures(1, &g_r3_tex);
+        }
+        if (g_active_unit != 0) {
+            glActiveTexture(GL_TEXTURE0);
+            g_active_unit = 0;
+        }
+        glGenTextures(1, &g_r3_tex);
+        glBindTexture(GL_TEXTURE_2D, g_r3_tex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        g_bound[0] = g_r3_tex;
+        glGenFramebuffers(1, &g_r3_fbo);
+        glBindFramebuffer(GL_FRAMEBUFFER, g_r3_fbo);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, g_r3_tex, 0);
+        glGenRenderbuffers(1, &g_r3_rb);
+        glBindRenderbuffer(GL_RENDERBUFFER, g_r3_rb);
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8, w, h);
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT, GL_RENDERBUFFER, g_r3_rb);
+        g_r3_w = w; g_r3_h = h; g_r3_dw = g_draw_w; g_r3_dh = g_draw_h;
+        port_log("gx: 3D target %dx%d for a %dx%d drawable (%d%%)", w, h, g_draw_w, g_draw_h, g_res3d_pct_rt);
+    }
+    glBindFramebuffer(GL_FRAMEBUFFER, g_r3_fbo);
+    g_rt_lowres = 1;
+}
+
+/* scale the 3D target up into the drawable; the rest of the frame is native */
+static void r3_composite(void) { /* callers drop the GL state shadow (g_gl.valid = 0) */
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDisable(GL_SCISSOR_TEST);
+    glViewport(0, 0, g_win_w, g_win_h);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glDepthMask(GL_TRUE);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, g_r3_fbo);
+    glBlitFramebuffer(0, 0, g_r3_w, g_r3_h, g_off_x, g_win_h - g_off_y - g_draw_h, g_off_x + g_draw_w, g_win_h - g_off_y,
+                      GL_COLOR_BUFFER_BIT, GL_LINEAR);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    g_rt_lowres = 0;
+}
+
 #define TEX_CACHE_SIZE 2048
 static TexCacheEntry g_texcache[TEX_CACHE_SIZE];
 static u32 g_frame;
@@ -1699,6 +1764,10 @@ static void apply_state(const BatchState *b) {
     int scy = g_win_h - (g_off_y + (int)(b->scissor[1] * sy)) - sh;
     int blend, bsrc = 0, bdst = 0, beq = 0, cull;
     int v = g_gl.valid;
+    if (g_rt_lowres) {
+        r3_map(&vx, &vy, &vw, &vh);
+        r3_map(&scx, &scy, &sw, &sh);
+    }
     if (g_gpuexp == 'q') {
         vx /= 2; vy /= 2; vw /= 2; vh /= 2;
         scx /= 2; scy /= 2; sw /= 2; sh /= 2;
@@ -1962,7 +2031,7 @@ static void gl_draw_static(ShaderEntry *s, const BatchState *b, const int *texsl
  * presents into a per-frame command list; a render thread (its own CPU core on
  * Vita) executes the GL calls. Two frame buffers: the game builds frame N+1
  * while frame N is drawn. CWOC_RT=0 runs the commands inline instead. */
-enum { CMD_DRAW, CMD_UPLOAD, CMD_CLEAR, CMD_COPY, CMD_PRESENT, CMD_DRAW_STATIC };
+enum { CMD_DRAW, CMD_UPLOAD, CMD_CLEAR, CMD_COPY, CMD_PRESENT, CMD_DRAW_STATIC, CMD_COMPOSITE };
 
 typedef struct {
     int type;
@@ -1972,7 +2041,7 @@ typedef struct {
          * arena, over vertex page 'page', with model-view matrix set 'mtx' */
         struct { ShaderEntry *sh; u32 first, n; int st, mtx, page; int texslot[MAX_TEV]; } sdraw;
         struct { int slot, w, h; u8 *rgba; } up;
-        struct { GXColor col; } clear;
+        struct { GXColor col; int lowres; } clear;
         struct { void *dest; int w, h, rx, ry, rw, rh; } copy;
         struct { int frame; } present;
     } u;
@@ -2799,6 +2868,22 @@ static void exec_cmds(int f, int from, int to) {
         }
         case CMD_CLEAR:
             g_gl.valid = 0;
+            if (c->u.clear.lowres) {
+                r3_bind();
+                g_r3_frames++;
+                glDisable(GL_SCISSOR_TEST);
+                glViewport(0, 0, g_r3_w, g_r3_h);
+                glClearColor(c->u.clear.col.r / 255.0f, c->u.clear.col.g / 255.0f, c->u.clear.col.b / 255.0f, 1.0f);
+                glDepthMask(GL_TRUE);
+                glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                glEnable(GL_SCISSOR_TEST);
+                break;
+            }
+            if (g_rt_lowres) { /* a frame without its composite (never expected) */
+                glBindFramebuffer(GL_FRAMEBUFFER, 0);
+                g_rt_lowres = 0;
+            }
             glDisable(GL_SCISSOR_TEST);
             glViewport(0, 0, g_win_w, g_win_h);
             glClearColor(0.0f, getenv("CWOC_DEBUGFS") ? 0.5f : 0.0f, 0, 1);
@@ -2817,8 +2902,25 @@ static void exec_cmds(int f, int from, int to) {
             g_prof_cnt[PROF_RT_COPY]++;
             break;
         }
+        case CMD_COMPOSITE:
+            if (g_rt_lowres) {
+                r3_composite();
+                g_gl.valid = 0;
+                g_r3_hud++;
+            }
+            break;
         case CMD_PRESENT: {
             uint64_t t0 = port_prof_now();
+            if (g_rt_lowres) { /* no HUD scene this frame: scale up before the swap */
+                r3_composite();
+                g_gl.valid = 0;
+                g_r3_late++;
+            }
+            if (g_r3_frames >= 300) {
+                port_log("gx: 3D at %d%%: %u frames, scaled up at the HUD %u, at the swap %u", g_res3d_pct_rt, g_r3_frames,
+                         g_r3_hud, g_r3_late);
+                g_r3_frames = g_r3_hud = g_r3_late = 0;
+            }
             g_ws_rt = "present";
             port_video_present(c->u.present.frame);
             g_ws_rt = "-";
@@ -4209,8 +4311,12 @@ void GXCopyTex(void *dest, u8 clear) { GXO();
 /* render thread: read the drawable back into GameCube RGB565 tiled layout */
 static void exec_copy(const RCmd *c) {
     int w = c->u.copy.w, h = c->u.copy.h, rw = c->u.copy.rw, rh = c->u.copy.rh, x, y, bx, by;
-    u8 *pix = malloc((size_t)rw * rh * 4), *out = c->u.copy.dest;
-    glReadPixels(c->u.copy.rx, c->u.copy.ry, rw, rh, GL_RGBA, GL_UNSIGNED_BYTE, pix);
+    int rx = c->u.copy.rx, ry = c->u.copy.ry;
+    u8 *pix, *out = c->u.copy.dest;
+    if (g_rt_lowres) r3_map(&rx, &ry, &rw, &rh); /* the 3D target holds the picture (CWOC_RES3D) */
+    if (rw <= 0 || rh <= 0) return;
+    pix = malloc((size_t)rw * rh * 4);
+    glReadPixels(rx, ry, rw, rh, GL_RGBA, GL_UNSIGNED_BYTE, pix);
     for (by = 0; by < h; by += 4)
         for (bx = 0; bx < w; bx += 4)
             for (y = 0; y < 4; y++)
@@ -4225,16 +4331,45 @@ static void exec_copy(const RCmd *c) {
 }
 
 /* -------------------------------------------------------------- frame */
+/* CWOC_RES3D=<percent>: the 3D of a game frame is drawn into a smaller
+ * render target (percent of the drawable, each axis) and scaled up to the
+ * screen when the HUD scene starts (tbslotBegin slot 31, crashlib.c); the
+ * HUD, menus and fades are drawn at the native resolution on top. A frame is
+ * a game frame when the one before it had a HUD scene, so title screens and
+ * menus outside the game stay native. 0 / unset: off. */
+static int g_res3d_pct;         /* game thread: requested percent (0 = off) */
+static int g_hud_prev;          /* game thread: the last frame had a HUD scene */
+static int g_frame_lowres;      /* game thread: this frame's 3D goes to the small target */
+static int g_frame_composited;  /* game thread: the composite of this frame was emitted */
+
 void port_gx_begin_frame(void) {
     RCmd *c;
     port_gx_flush();
     g_frame++;
     if (g_trace > 0 && port_frame_count() >= g_trace_from) port_log("gx: frame %d", port_frame_count());
+    g_frame_lowres = g_res3d_pct > 0 && g_hud_prev;
+    g_frame_composited = 0;
+    g_hud_prev = 0;
     rq_ensure(1, 0, 0);
     c = rq_cmd();
     c->type = CMD_CLEAR;
     c->u.clear.col = gx.copy_clear;
+    c->u.clear.lowres = g_frame_lowres;
     rq_commit();
+}
+
+/* game thread: the HUD scene starts (crashlib.c tbslotBegin, slot 31) */
+void port_gx_hud_begin(void) {
+    RCmd *c;
+    g_hud_prev = 1;
+    if (!g_frame_lowres || g_frame_composited) return;
+    if (g_rec_active) return; /* never inside a recorded pass (the composite then happens at present) */
+    port_gx_flush();
+    rq_ensure(1, 0, 0);
+    c = rq_cmd();
+    c->type = CMD_COMPOSITE;
+    rq_commit();
+    g_frame_composited = 1;
 }
 
 void port_gx_init(void) {
@@ -4252,6 +4387,12 @@ void port_gx_init(void) {
     }
 #endif
     g_gpuexp = getenv("CWOC_GPUEXP") ? getenv("CWOC_GPUEXP")[0] : 0;
+    if (getenv("CWOC_RES3D")) {
+        g_res3d_pct = atoi(getenv("CWOC_RES3D"));
+        if (g_res3d_pct < 25 || g_res3d_pct >= 100) g_res3d_pct = 0;
+        g_res3d_pct_rt = g_res3d_pct;
+        port_log("gx: 3D resolution %d%% (CWOC_RES3D)", g_res3d_pct ? g_res3d_pct : 100);
+    }
     if (g_gpuexp) port_log("gx: GPU experiment '%c' (measurement only)", g_gpuexp);
     g_trace = getenv("CWOC_GXTRACE") ? atoi(getenv("CWOC_GXTRACE")) : 0;
     g_trace_from = getenv("CWOC_GXTRACE_FROM") ? atoi(getenv("CWOC_GXTRACE_FROM")) : 0;
