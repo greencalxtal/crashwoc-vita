@@ -91,7 +91,7 @@ def env_text(name, level, frames, extra=()):
     return "\n".join(lines) + "\n"
 
 
-def run_one(out, name, level, rep, frames, install, extra=()):
+def run_one(out, name, level, rep, frames, install, extra=(), captures=()):
     tag = "%s_%d" % (name, rep)
     envf = out / (tag + ".env.txt")
     envf.write_text(env_text(name, level, frames, extra))
@@ -106,8 +106,12 @@ def run_one(out, name, level, rep, frames, install, extra=()):
     r = vau("run", "start", str(specf), *(["--yes"] if install else []))
     run_id = r["result"]["run_id"]
     t0 = time.time()
+    pending = sorted(captures)
     while True:
-        time.sleep(5)
+        time.sleep(1 if pending else 5)
+        while pending and time.time() - t0 >= pending[0]:
+            # screen capture at a fixed time after the run started (A/B checks)
+            vau("screen", "capture", "--output", str(out / ("%s_t%03d.jpg" % (tag, pending.pop(0)))))
         st = vau("run", "status")["result"]
         if st.get("phase") in ("completed", "finished", "failed", "cancelled"):
             break
@@ -136,6 +140,7 @@ def main():
     ap.add_argument("--only")
     ap.add_argument("--frames", type=int, default=3200)
     ap.add_argument("--env", action="append", default=[], help="extra KEY=VALUE for env.txt")
+    ap.add_argument("--capture", default="", help="screen captures at these seconds after each run starts, e.g. 110,130")
     a = ap.parse_args()
     out = pathlib.Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
@@ -144,7 +149,8 @@ def main():
     try:
         for rep in range(1, a.reps + 1):
             for name in names:
-                res = run_one(out, name, SCENARIOS[name], rep, a.frames, install, a.env)
+                res = run_one(out, name, SCENARIOS[name], rep, a.frames, install, a.env,
+                              [int(x) for x in a.capture.split(",") if x])
                 install = None
                 if res.get("phase") != "completed":
                     print("stopping: run did not complete (locked screen, crash or dialog?)", flush=True)
