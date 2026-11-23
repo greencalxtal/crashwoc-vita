@@ -168,8 +168,16 @@ if(PORT_VITA)
     set(_vgl_lib "$ENV{VITASDK}/arm-vita-eabi/lib/libvitaGL.a")
     set(_vgl_link vitaGL)
   endif()
-  # identity of the linked vitaGL: part of the shader program cache key (gx_gl.c)
-  if(EXISTS "${_vgl_lib}")
+  # identity of the linked vitaGL: part of the shader program cache key (gx_gl.c).
+  # A vitaGL from build_vitagl.sh is named by its stamp (commit, make flags,
+  # patch hash): a rebuild of the same vitaGL keeps the id (the archive's own
+  # bytes carry timestamps), so shipped program binaries stay valid.
+  if(PORT_VITAGL_DIR AND EXISTS "${PORT_VITAGL_DIR}/lib/.built")
+    file(READ "${PORT_VITAGL_DIR}/lib/.built" _vgl_stamp)
+    string(SHA256 _vgl_sha "${_vgl_stamp}")
+    string(SUBSTRING "${_vgl_sha}" 0 12 PORT_VITAGL_ID)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${PORT_VITAGL_DIR}/lib/.built")
+  elseif(EXISTS "${_vgl_lib}")
     file(SHA256 "${_vgl_lib}" _vgl_sha)
     string(SUBSTRING "${_vgl_sha}" 0 12 PORT_VITAGL_ID)
   else()
@@ -222,6 +230,20 @@ if(PORT_VITA)
       if(EXISTS "${CWOC_LIVEAREA_DIR}/${f}")
         list(APPEND CWOC_VPK_FILES FILE "${CWOC_LIVEAREA_DIR}/${f}" sce_sys/livearea/contents/${f})
       endif()
+    endforeach()
+  endif()
+  # Optional shader seed (scripts/shader_seed.py; not in the repo): GPU
+  # programs compiled on a console, packed as app0:shaders/ so a first start
+  # compiles nothing that the seed has (gx_gl.c, port_video.c). Layout:
+  # vgl/v2/{v,f}/<hash>.gxp (vitaGL's shader cache) and prog/<hash>.bin (the
+  # port's program cache, valid only for the same PORT_VITAGL_ID).
+  set(CWOC_SHADER_SEED "" CACHE PATH "folder with a shader seed (scripts/shader_seed.py)")
+  if(CWOC_SHADER_SEED AND IS_DIRECTORY "${CWOC_SHADER_SEED}")
+    file(GLOB_RECURSE _seed_files RELATIVE "${CWOC_SHADER_SEED}" "${CWOC_SHADER_SEED}/*.gxp" "${CWOC_SHADER_SEED}/*.bin")
+    list(LENGTH _seed_files _seed_n)
+    message(STATUS "shader seed: ${_seed_n} files from ${CWOC_SHADER_SEED}")
+    foreach(f ${_seed_files})
+      list(APPEND CWOC_VPK_FILES FILE "${CWOC_SHADER_SEED}/${f}" shaders/${f})
     endforeach()
   endif()
   vita_create_vpk(crashwoc.vpk ${VITA_TITLEID} eboot.bin

@@ -19,7 +19,9 @@ Linux or WSL is recommended.
   (`scripts/build_vitagl.sh`: the VitaSDK package's commit with
   `HAVE_SHADER_CACHE=1`, so shaders are compiled once per install, not once
   per session) into `build-vitagl/`; `CWOC_SDK_VITAGL=1` links the VitaSDK
-  vitaGL instead.
+  vitaGL instead. If `shader-seed/` exists (made on a console with
+  `scripts/shader_seed.py`: the game's GPU programs, compiled ahead of time)
+  it is packed into the VPK, and a first start compiles nothing it has.
 - PC (optional, for development): 32-bit `gcc-multilib`, SDL2 and OpenGL
   development packages (i386).
 

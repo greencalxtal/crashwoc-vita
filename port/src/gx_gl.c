@@ -823,17 +823,29 @@ static int shcache_load(ShaderEntry *e, const char *path) {
     void *data;
     GLint ok = 0;
     FILE *f = fopen(path, "rb");
-    if (!f) return 0;
+    if (!f) {
+        /* the seed shipped in the VPK (CMake CWOC_SHADER_SEED): read-only,
+         * same file name; CWOC_SHSEED=0 ignores it */
+        static int seed = -1;
+        const char *base = strrchr(path, '/');
+        char alt[128];
+        if (seed < 0) seed = !(getenv("CWOC_SHSEED") && getenv("CWOC_SHSEED")[0] == '0');
+        if (!seed || !base) return 0;
+        snprintf(alt, sizeof(alt), "app0:shaders/prog%s", base);
+        f = fopen(alt, "rb");
+        if (!f) return 0;
+        path = NULL; /* never remove a seed file */
+    }
     if (fread(hdr, sizeof(hdr), 1, f) != 1 || hdr[0] != SHCACHE_MAGIC || hdr[2] == 0 || hdr[2] > (1u << 20) ||
         !(data = malloc(hdr[2]))) {
         fclose(f);
-        remove(path);
+        if (path) remove(path);
         return 0;
     }
     if (fread(data, hdr[2], 1, f) != 1) {
         fclose(f);
         free(data);
-        remove(path);
+        if (path) remove(path);
         return 0;
     }
     fclose(f);
@@ -842,10 +854,10 @@ static int shcache_load(ShaderEntry *e, const char *path) {
     free(data);
     glGetProgramiv(e->prog, GL_LINK_STATUS, &ok);
     if (!ok) {
-        port_log("gx: cached program %s rejected, compiling", path);
+        port_log("gx: cached program %s rejected, compiling", path ? path : "(seed)");
         glDeleteProgram(e->prog);
         e->prog = 0;
-        remove(path);
+        if (path) remove(path);
         return 0;
     }
     return 1;

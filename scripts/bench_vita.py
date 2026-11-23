@@ -16,6 +16,7 @@ import argparse
 import json
 import os
 import pathlib
+import re
 import subprocess
 import sys
 import time
@@ -46,6 +47,17 @@ SKIP_INPUT = "A@420-425,A@520-525,A@620-625"
 MOVE_INPUT = ("SUP@760-1300,A@820-826,B@950-956,A@1100-1106,SRIGHT@1300-1550,SUP@1550-2200,B@1650-1656,"
               "A@1800-1806,B@1950-1956,SLEFT@2200-2450,SUP@2450-3000,A@2500-2506,B@2650-2656,A@2800-2806")
 SCENARIOS.update({"jungle_mv": 8, "earth_mv": 4, "hub_mv": None})
+
+
+def scenario_level(name):
+    """Level of a scenario: the table above, or lvlN / lvlN_mv for any level
+    index N (CWOC_WARP; scripts/shader_seed.py walks them all)."""
+    if name in SCENARIOS:
+        return SCENARIOS[name]
+    m = re.fullmatch(r"lvl(\d+)(_mv)?", name)
+    if not m:
+        raise SystemExit("unknown scenario %s" % name)
+    return int(m.group(1))
 
 
 def vau(*args, timeout=600):
@@ -149,7 +161,7 @@ def main():
     try:
         for rep in range(1, a.reps + 1):
             for name in names:
-                res = run_one(out, name, SCENARIOS[name], rep, a.frames, install, a.env,
+                res = run_one(out, name, scenario_level(name), rep, a.frames, install, a.env,
                               [int(x) for x in a.capture.split(",") if x])
                 install = None
                 if res.get("phase") != "completed":

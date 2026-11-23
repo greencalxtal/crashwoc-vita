@@ -141,6 +141,13 @@ void port_platform_init(int argc, char **argv) {
         mkdir(d, 0777);
         snprintf(path, sizeof(path), "%s/vgl%s", d, o && o[0] >= '0' && o[0] <= '4' ? o : "");
         vglSetShaderCachePath(path);
+        /* shaders shipped in the VPK (CMake CWOC_SHADER_SEED): read when the
+         * cache on the card does not have them; CWOC_SHSEED=0 ignores them */
+        if (!(getenv("CWOC_SHSEED") && getenv("CWOC_SHSEED")[0] == '0')) {
+            char seed[64];
+            snprintf(seed, sizeof(seed), "app0:shaders/vgl%s", o && o[0] >= '0' && o[0] <= '4' ? o : "");
+            vglSetShaderCacheSeedPath(seed);
+        }
         vglInitExtended(0, w, h, 8 * 1024 * 1024, SCE_GXM_MULTISAMPLE_NONE); /* MSAA off: fill rate */
         port_log("video: vitaGL init %.0f ms, shader cache %s", (port_prof_now() - t0) / 1000.0, path);
     }

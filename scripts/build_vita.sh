@@ -13,6 +13,9 @@ dol="$here/decomp/orig/GCBE7D/sys/main.dol"
 ( cd "$here/decomp" && python3 configure.py && ninja build/GCBE7D/config.json )
 extra=()
 [ -n "${CWOC_LIVEAREA_DIR:-}" ] && extra+=("-DCWOC_LIVEAREA_DIR=$CWOC_LIVEAREA_DIR")
+# shader seed packed into the VPK when there is one (scripts/shader_seed.py)
+seed="${CWOC_SHADER_SEED:-$here/shader-seed}"
+if [ -d "$seed" ]; then extra+=("-DCWOC_SHADER_SEED=$seed"); else extra+=("-DCWOC_SHADER_SEED="); fi
 # vitaGL with the shader disk cache (scripts/build_vitagl.sh); CWOC_SDK_VITAGL=1
 # links the VitaSDK package instead
 if [ -n "${CWOC_SDK_VITAGL:-}" ]; then
