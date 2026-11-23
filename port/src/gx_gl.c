@@ -899,7 +899,7 @@ static GLuint shader_obj(GLenum type, const char *src, int *reused) {
 static void ensure_program(ShaderEntry *e) {
     GLuint v, f;
     int i, v_old, f_old;
-    uint64_t t0, t1, t2;
+    uint64_t t0, t1, t2, tm, tl;
 #ifdef PORT_VITA
     char cpath[256];
 #endif
@@ -922,6 +922,7 @@ static void ensure_program(ShaderEntry *e) {
         }
     }
 #endif
+    tm = port_prof_now(); /* t0..tm: looking up the program cache */
     v = shader_obj(GL_VERTEX_SHADER, e->vsrc, &v_old);
     t1 = port_prof_now();
     f = shader_obj(GL_FRAGMENT_SHADER, e->fsrc, &f_old);
@@ -936,6 +937,7 @@ static void ensure_program(ShaderEntry *e) {
     glBindAttribLocation(e->prog, 2, "a_clr");
     glBindAttribLocation(e->prog, 3, "a_tex");
     glLinkProgram(e->prog);
+    tl = port_prof_now();
     {
         GLint ok = 0;
         glGetProgramiv(e->prog, GL_LINK_STATUS, &ok);
@@ -951,8 +953,9 @@ static void ensure_program(ShaderEntry *e) {
     t1 = port_prof_now();
     g_shc_us[2] += t1 - t2;
     g_shc_n++;
-    port_log("gx: program %d compiled in %.0f ms (vertex shader %s, fragment shader %s)", (int)(e - g_shaders),
-             (t1 - t0) / 1000.0, v_old ? "reused" : "new", f_old ? "reused" : "new");
+    port_log("gx: program %d compiled in %.0f ms (vertex shader %s, fragment shader %s; cache lookup %.0f, link %.0f, "
+             "save %.0f ms)", (int)(e - g_shaders), (t1 - t0) / 1000.0, v_old ? "reused" : "new", f_old ? "reused" : "new",
+             (tm - t0) / 1000.0, (tl - t2) / 1000.0, (t1 - tl) / 1000.0);
     t2 = port_prof_now();
 #ifdef PORT_VITA
 lookups:

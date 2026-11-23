@@ -11,6 +11,7 @@ int port_skip_logos(void) {
 }
 
 #ifdef PORT_VITA
+#include <psp2/kernel/threadmgr.h>
 #include <psp2/power.h>
 /* newlib heap for the game (GameCube had 24 MB; the port also keeps decoded
  * textures and translated-code stacks in main RAM). vitaGL uses CDRAM. */
@@ -86,6 +87,19 @@ const unsigned char port_vita_text_pad[PORT_VITA_TEXT_PAD] = {1};
 int main(int argc, char **argv) {
 #ifdef PORT_VITA
     (void)*(volatile const unsigned char *)port_vita_text_pad;
+    {
+        /* one-shot power off for unattended test sessions: the PC side
+         * (vita-agent-use) cannot turn the console off, so it uploads this
+         * file and starts the game, which removes it and puts the Vita in
+         * standby. Removed first, so a failed request never repeats. */
+        FILE *sf = fopen("ux0:data/crashwoc/standby.flag", "rb");
+        if (sf) {
+            fclose(sf);
+            remove("ux0:data/crashwoc/standby.flag");
+            scePowerRequestStandby();
+            sceKernelDelayThread(10 * 1000 * 1000);
+        }
+    }
     env_file_load();
     /* run at the highest standard clocks (default ARM clock is 333 MHz) */
     scePowerSetArmClockFrequency(444);

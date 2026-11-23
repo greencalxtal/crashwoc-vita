@@ -558,7 +558,7 @@ void DEMOSwapBuffers(void) {
         static uint64_t io_us0, io_b0;
         static int io_f0;
         static int thresh = -1;
-        if (thresh < 0) thresh = getenv("CWOC_LONGFRAME") ? atoi(getenv("CWOC_LONGFRAME")) : 500;
+        if (thresh < 0) thresh = getenv("CWOC_LONGFRAME") ? atoi(getenv("CWOC_LONGFRAME")) : 100;
         if (last_swap && now - last_swap > (Uint32)thresh)
             port_log("long frame %d: %u ms (file reads %.0f ms, %.1f MB, %d opens)", g_frames, now - last_swap,
                      (port_io_us - io_us0) / 1000.0, (port_io_bytes - io_b0) / 1048576.0, port_io_files - io_f0);
