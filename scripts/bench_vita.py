@@ -39,6 +39,13 @@ SCENARIOS = {
 # with a fresh save the first level entered from the hub opens with a story
 # scene in the vortex (cut.c UpdateGameCut) that waits for A/START
 SKIP_INPUT = "A@420-425,A@520-525,A@620-625"
+# "_mv" scenarios: Crash runs, jumps and spins (A jump, B spin; frames are
+# presented frames). Lighting and effects change as he moves, which the
+# standing scenarios never show: use them for hitches and shader counts,
+# not for fps.
+MOVE_INPUT = ("SUP@760-1300,A@820-826,B@950-956,A@1100-1106,SRIGHT@1300-1550,SUP@1550-2200,B@1650-1656,"
+              "A@1800-1806,B@1950-1956,SLEFT@2200-2450,SUP@2450-3000,A@2500-2506,B@2650-2656,A@2800-2806")
+SCENARIOS.update({"jungle_mv": 8, "earth_mv": 4, "hub_mv": None})
 
 
 def vau(*args, timeout=600):
@@ -68,12 +75,18 @@ def upload_env(src, out):
         raise RuntimeError("env.txt on the Vita does not match %s" % src)
 
 
-def env_text(level, frames, extra=()):
+def env_text(name, level, frames, extra=()):
     lines = ["# benchmark run (written by scripts/bench_vita.py); delete this file for normal play",
              "CWOC_SAVE=ux0:data/crashwoc/save_bench", "CWOC_SKIP_LOGOS=1", "CWOC_INTRO=0",
              "CWOC_KEEPAWAKE=1", "CWOC_LONGFRAME=100", "CWOC_FRAMES=%d" % frames]
+    inp = []
     if level is not None:
-        lines += ["CWOC_WARP=%d@200" % level, "CWOC_INPUT=" + SKIP_INPUT]
+        lines += ["CWOC_WARP=%d@200" % level]
+        inp.append(SKIP_INPUT)
+    if name.endswith("_mv"):
+        inp.append(MOVE_INPUT)
+    if inp:
+        lines += ["CWOC_INPUT=" + ",".join(inp)]
     lines += list(extra)
     return "\n".join(lines) + "\n"
 
@@ -81,7 +94,7 @@ def env_text(level, frames, extra=()):
 def run_one(out, name, level, rep, frames, install, extra=()):
     tag = "%s_%d" % (name, rep)
     envf = out / (tag + ".env.txt")
-    envf.write_text(env_text(level, frames, extra))
+    envf.write_text(env_text(name, level, frames, extra))
     upload_env(envf, out)
     spec = {"title_id": "CRWC00001", "timeout_s": 600, "performance_interval_ms": 1000,
             "close_on_completion": False,

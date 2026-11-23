@@ -773,8 +773,13 @@ uint64_t g_shc_us[4];
  * sessions restore it with glProgramBinary, which skips the compiler.
  * Files are named by a hash of both sources and of the linked vitaGL
  * (PORT_VITAGL_ID, CMake), so another vitaGL never loads stale binaries.
- * CWOC_SHCACHE=0 disables it. */
+ * CWOC_SHCACHE=0 disables it; CWOC_SHCACHEDIR=<dir> uses another folder
+ * (measurements: a fresh folder counts what a first session compiles). */
 #define SHCACHE_DIR "ux0:data/crashwoc/shadercache"
+static const char *shcache_dir(void) {
+    const char *d = getenv("CWOC_SHCACHEDIR");
+    return d && d[0] ? d : SHCACHE_DIR;
+}
 #define SHCACHE_MAGIC 0x31435743u /* "CWC1" */
 #ifndef PORT_VITAGL_ID
 #define PORT_VITAGL_ID "unknown"
@@ -797,7 +802,7 @@ static void shcache_path(char *buf, size_t n, const ShaderEntry *e) {
     h = fnv1a64(e->vsrc, h);
     h = fnv1a64("|", h);
     h = fnv1a64(e->fsrc, h);
-    snprintf(buf, n, SHCACHE_DIR "/%016llx.bin", h);
+    snprintf(buf, n, "%s/%016llx.bin", shcache_dir(), h);
 }
 
 static int shcache_load(ShaderEntry *e, const char *path) {
@@ -877,8 +882,8 @@ static void ensure_program(ShaderEntry *e) {
     if (g_shcache < 0) {
         const char *s = getenv("CWOC_SHCACHE");
         g_shcache = !(s && s[0] == '0');
-        if (g_shcache) mkdir(SHCACHE_DIR, 0777);
-        port_log("gx: shader program cache %s (" SHCACHE_DIR ", vitaGL %s)", g_shcache ? "on" : "off", PORT_VITAGL_ID);
+        if (g_shcache) mkdir(shcache_dir(), 0777);
+        port_log("gx: shader program cache %s (%s, vitaGL %s)", g_shcache ? "on" : "off", shcache_dir(), PORT_VITAGL_ID);
     }
     if (g_shcache) {
         shcache_path(cpath, sizeof(cpath), e);
