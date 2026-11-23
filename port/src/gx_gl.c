@@ -568,15 +568,24 @@ static int atest_redundant(void) {
     return 1;
 }
 
+/* Vertex lighting: only COLOR0 is lit (ALPHA0 only picks its material
+ * source). The lights it uses are packed, in index order, into the first
+ * slots of u_lightpos/u_lightcol (capture_state), so a vertex shader depends
+ * on how many lights are on, not on which: same sums in the same order, 9
+ * lit variants instead of one per light mask. A new vertex shader is the
+ * dearest compile (330-600 ms on the render thread, a hitch). */
+static inline int chan_lit(void) { return gx.num_chans && gx.chan[0].enable; }
+static inline int lit_count(void) { return chan_lit() ? __builtin_popcount((unsigned)gx.chan[0].light_mask & 0xFFu) : 0; }
+
+/* the key holds exactly what changes the generated GLSL */
 static void build_key(u32 key[8]) {
-    int i;
+    int i, lit = chan_lit(), nl = lit_count();
     memset(key, 0, 8 * sizeof(u32));
-    key[0] = (u32)gx.num_tev | (u32)(gx.chan[0].enable ? 1 : 0) << 4 | (u32)gx.chan[0].mat_src << 5 |
-             (u32)gx.chan[0].amb_src << 6 | (u32)(gx.chan[1].enable ? 1 : 0) << 7 | (u32)gx.chan[1].mat_src << 8 |
-             (u32)gx.chan[1].amb_src << 9 | (u32)gx.chan[0].diff_fn << 10 | (u32)gx.chan[1].diff_fn << 12 |
+    key[0] = (u32)gx.num_tev | (u32)lit << 4 | (u32)gx.chan[0].mat_src << 5 | (u32)(lit ? gx.chan[0].amb_src : 0) << 6 |
+             (u32)gx.chan[1].mat_src << 8 | (u32)(nl ? gx.chan[0].diff_fn : 0) << 10 |
              (u32)(gx.fog_type ? 1 : 0) << 14 | (u32)gx.alpha_comp0 << 15 | (u32)gx.alpha_comp1 << 18 |
-             (u32)gx.alpha_op << 21 | (u32)(gx.num_chans ? 1 : 0) << 23 | (u32)atest_redundant() << 24;
-    key[1] = (u32)(gx.chan[0].light_mask & 0xFF) | (u32)(gx.chan[1].light_mask & 0xFF) << 8;
+             (u32)gx.alpha_op << 21 | (u32)atest_redundant() << 24;
+    key[1] = (u32)nl;
     for (i = 0; i < gx.num_tev && i < MAX_TEV; i++) {
         const TevStage *t = &gx.tev[i];
         u32 c = (u32)t->color_in[0] | t->color_in[1] << 4 | t->color_in[2] << 8 | t->color_in[3] << 12 |
@@ -676,19 +685,19 @@ static ShaderEntry *get_shader_inner(void) {
 
     /* vertex shader defines (colour channel config) */
     p = defs;
-    if (gx.num_chans && gx.chan[0].enable) p += sprintf(p, "#define CHAN_C_ENABLE 1\n");
-    p += sprintf(p, "#define CHAN_C_AMB %s\n", gx.chan[0].amb_src ? "vc" : "u_amb");
-    p += sprintf(p, "#define CHAN_C_MAT %s\n", gx.chan[0].mat_src ? "vc" : "u_mat");
-    p += sprintf(p, "#define CHAN_A_MAT %s\n", gx.chan[1].mat_src ? "vc" : "u_mat");
-    {
-        /* one unrolled term per enabled light (the mask is part of the key) */
+    if (chan_lit()) {
+        /* one unrolled term per light on, in the packed slots (build_key) */
         const char *df = gx.chan[0].diff_fn == 2 ? "max(dot(n, L), 0.0)" : gx.chan[0].diff_fn == 1 ? "dot(n, L)" : "1.0";
+        int nl = lit_count();
+        p += sprintf(p, "#define CHAN_C_ENABLE 1\n");
+        p += sprintf(p, "#define CHAN_C_AMB %s\n", gx.chan[0].amb_src ? "vc" : "u_amb");
         p += sprintf(p, "#define LIGHTS_CODE ");
-        for (i = 0; i < 8; i++)
-            if (gx.chan[0].light_mask & (1 << i))
-                p += sprintf(p, "{ vec3 L = normalize(u_lightpos[%d] - vp.xyz); lit += %s * u_lightcol[%d].rgb; } ", i, df, i);
+        for (i = 0; i < nl; i++)
+            p += sprintf(p, "{ vec3 L = normalize(u_lightpos[%d] - vp.xyz); lit += %s * u_lightcol[%d].rgb; } ", i, df, i);
         p += sprintf(p, "\n");
     }
+    p += sprintf(p, "#define CHAN_C_MAT %s\n", gx.chan[0].mat_src ? "vc" : "u_mat");
+    p += sprintf(p, "#define CHAN_A_MAT %s\n", gx.chan[1].mat_src ? "vc" : "u_mat");
     {
         /* insert defines after the GLSL header line(s) */
         const char *body = strstr(VS_SRC, "attribute");
@@ -1661,7 +1670,11 @@ static void capture_state(BatchState *b) {
     b->posmtx[0][0] = b->posmtx[1][1] = b->posmtx[2][2] = 1.0f;
     b->nrmmtx[0][0] = b->nrmmtx[1][1] = b->nrmmtx[2][2] = 1.0f;
     b->amb = gx.amb_color; b->mat = gx.mat_color;
-    memcpy(b->lights, gx.lights, sizeof(b->lights));
+    if (chan_lit()) { /* packed: the lights COLOR0 uses, in index order (build_key) */
+        int n = 0;
+        for (i = 0; i < 8; i++)
+            if (gx.chan[0].light_mask & (1 << i)) b->lights[n++] = gx.lights[i];
+    }
     b->aref0 = gx.alpha_ref0; b->aref1 = gx.alpha_ref1;
     if (gx.fog_type) { b->fog_start = gx.fog_start; b->fog_end = gx.fog_end; b->fog_color = gx.fog_color; }
 }
