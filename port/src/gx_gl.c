@@ -182,6 +182,7 @@ static ChanCtrl g_chan_snap[2];  /* channels at the last batch-state capture */ 
 static int g_prim, g_vtxfmt, g_nverts, g_in_begin;
 
 /* window mapping (EFB 640x448 -> drawable) */
+int port_frame_count(void);
 static int g_trace, g_trace_from;
 /* debug: port_gx_trace_scope(1/0) brackets code whose GX output should be
  * traced (CWOC_GXTRACE_SCOPE=n limits it to n records) */
@@ -669,6 +670,9 @@ static ShaderEntry *get_shader_inner(void) {
     }
     e = &g_shaders[g_num_shaders++];
     memcpy(e->key, key, sizeof(key));
+    /* rare (a few dozen a session) and each one may cost a compile: say which */
+    port_log("gx: shader %d new at frame %d: key %08x %08x %08x %08x %08x %08x %08x %08x", g_num_shaders - 1,
+             port_frame_count(), key[0], key[1], key[2], key[3], key[4], key[5], key[6], key[7]);
 
     /* vertex shader defines (colour channel config) */
     p = defs;
@@ -869,9 +873,32 @@ static void shcache_save(GLuint prog, const char *path) {
 }
 #endif
 
+/* Compiled shader objects, shared by every program with the same source.
+ * vitaGL compiles GLSL in glLinkProgram, but only the shaders of the program
+ * that are not compiled yet (it reuses the semantic bindings of a compiled
+ * one), so a program whose vertex shader is already known only compiles
+ * its fragment shader. Most programs differ only in the TEV fragment code. */
+static struct { const char *src; GLenum type; GLuint obj; } g_shobj[2 * MAX_SHADERS];
+static int g_num_shobj;
+
+static GLuint shader_obj(GLenum type, const char *src, int *reused) {
+    int i;
+    for (i = 0; i < g_num_shobj; i++)
+        if (g_shobj[i].type == type && strcmp(g_shobj[i].src, src) == 0) {
+            *reused = 1;
+            return g_shobj[i].obj;
+        }
+    *reused = 0;
+    if (g_num_shobj == 2 * MAX_SHADERS) return compile(type, src);
+    g_shobj[g_num_shobj].src = src;
+    g_shobj[g_num_shobj].type = type;
+    g_shobj[g_num_shobj].obj = compile(type, src);
+    return g_shobj[g_num_shobj++].obj;
+}
+
 static void ensure_program(ShaderEntry *e) {
     GLuint v, f;
-    int i;
+    int i, v_old, f_old;
     uint64_t t0, t1, t2;
 #ifdef PORT_VITA
     char cpath[256];
@@ -895,9 +922,9 @@ static void ensure_program(ShaderEntry *e) {
         }
     }
 #endif
-    v = compile(GL_VERTEX_SHADER, e->vsrc);
+    v = shader_obj(GL_VERTEX_SHADER, e->vsrc, &v_old);
     t1 = port_prof_now();
-    f = compile(GL_FRAGMENT_SHADER, e->fsrc);
+    f = shader_obj(GL_FRAGMENT_SHADER, e->fsrc, &f_old);
     t2 = port_prof_now();
     g_shc_us[0] += t1 - t0;
     g_shc_us[1] += t2 - t1;
@@ -921,8 +948,11 @@ static void ensure_program(ShaderEntry *e) {
         else if (g_shcache) shcache_save(e->prog, cpath);
 #endif
     }
-    g_shc_us[2] += port_prof_now() - t2;
+    t1 = port_prof_now();
+    g_shc_us[2] += t1 - t2;
     g_shc_n++;
+    port_log("gx: program %d compiled in %.0f ms (vertex shader %s, fragment shader %s)", (int)(e - g_shaders),
+             (t1 - t0) / 1000.0, v_old ? "reused" : "new", f_old ? "reused" : "new");
     t2 = port_prof_now();
 #ifdef PORT_VITA
 lookups:
