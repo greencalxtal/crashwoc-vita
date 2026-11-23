@@ -3895,10 +3895,18 @@ index 9685b8c..ad71754 100644
  }
  
 diff --git a/src/nu3dx/nurndr.c b/src/nu3dx/nurndr.c
-index b2137e9..f3a18a5 100644
+index b2137e9..1647150 100644
 --- a/src/nu3dx/nurndr.c
 +++ b/src/nu3dx/nurndr.c
-@@ -12,7 +12,11 @@
+@@ -5,6 +5,7 @@
+ #include "../system.h"
+ #include "../nuraster/dxframe.h"
+ #include <string.h>
++#include <stdlib.h>
+ 
+ #define PI 3.1415927f
+ #define MAX_FIXED_POINT 65536
+@@ -12,7 +13,11 @@
  
  s32 GS_Parallax;
  static struct nugeomitem_s geomitem[2048];
@@ -3910,7 +3918,7 @@ index b2137e9..f3a18a5 100644
  static s32 hgobj_enabled;
  struct numtx_s mtx_array2HGobjRndrDwa[256];
  struct numtx_s mtx_array2HGobj[256];
-@@ -35,6 +39,12 @@ void NuRndrInit(void) {
+@@ -35,6 +40,12 @@ void NuRndrInit(void) {
  //MATCH GCN
  s32 NuRndrBeginScene(s32 hRT) {
    u32 bs;
@@ -3923,7 +3931,7 @@ index b2137e9..f3a18a5 100644
  
    if (rndrmtx_cnt_max > rndrmtx_cnt) {
      rndrmtx_cnt_max = rndrmtx_cnt;
-@@ -63,7 +73,18 @@ void NuRndrEndScene(void) {
+@@ -63,7 +74,18 @@ void NuRndrEndScene(void) {
  
  //MATCH GCN
  void NuRndrFlush(void) {
@@ -3942,7 +3950,7 @@ index b2137e9..f3a18a5 100644
      NuLightClearStoredLights();
  }
  
-@@ -523,13 +544,25 @@ s32 NuRndrStrip3d(struct nuvtx_tc1_s **vtx,struct numtl_s *mtl,struct numtx_s* w
+@@ -523,13 +545,25 @@ s32 NuRndrStrip3d(struct nuvtx_tc1_s **vtx,struct numtl_s *mtl,struct numtx_s* w
      
      for (i = 0; i < ix; i++) {
          memcpy(vb, *vtx, 0x24);
@@ -3968,7 +3976,7 @@ index b2137e9..f3a18a5 100644
          vtx--;
      }
      
-@@ -650,17 +683,31 @@ void NuRndrFaceItem(struct nugeomitem_s* item) {
+@@ -650,17 +684,31 @@ void NuRndrFaceItem(struct nugeomitem_s* item) {
  }
  
  //MATCH GCN
@@ -4000,7 +4008,7 @@ index b2137e9..f3a18a5 100644
    for (prim = item->geom->prim; prim != NULL; prim = prim->next) {
            switch (prim->type) {
                case NUPT_POINT:
-@@ -685,6 +732,7 @@ static void NuRndrGeomItem(struct nugeomitem_s *item) {
+@@ -685,10 +733,52 @@ static void NuRndrGeomItem(struct nugeomitem_s *item) {
                break;
            }
    }
@@ -4008,7 +4016,52 @@ index b2137e9..f3a18a5 100644
    DBTimerEnd(6);
    return;
  }
-@@ -703,6 +751,25 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
+ 
++#ifdef PORT
++#ifdef __ARM_NEON
++#include <arm_neon.h>
++#endif
++/* PORT: the blend shapes (faces) of a skinned item, on the Vita. The
++ * original walks the vertices and, for each, every blend: one load from each
++ * blend's offset array per vertex, the worst pattern for the Cortex-A9's
++ * caches (~175 us an item, 3.7-6.6 ms a frame). Here each blend with a weight
++ * is added over all the vertices in turn, 4 at a time with NEON: per vertex
++ * the same products and sums in the same order (vmla is not fused, and NEON's
++ * flush-to-zero / round-to-nearest are the game thread's FPSCR settings), so
++ * the result is bit-identical (CWOC_CHECKBLEND=1 compares every item). */
++static void port_blend_positions(struct nuvec_s *dst, const struct nuvtx_sk3tc1_s *src, int n,
++                                 const struct NUBLENDGEOM_s *bg, const float *w) {
++    int i, j;
++    for (i = 0; i < n; i++) dst[i] = src[i].pnt;
++    for (j = 0; j < bg->nblends; j++) {
++        const struct nuvec_s *off = bg->blend_offsets[j];
++        float bv;
++        if (off == NULL) continue;
++        bv = w[bg->ix[j]];
++        if (bv == 0.0f) continue;
++        i = 0;
++#ifdef __ARM_NEON
++        for (; i + 4 <= n; i += 4) {
++            float32x4x3_t d = vld3q_f32(&dst[i].x), o = vld3q_f32(&off[i].x);
++            d.val[0] = vmlaq_n_f32(d.val[0], o.val[0], bv);
++            d.val[1] = vmlaq_n_f32(d.val[1], o.val[1], bv);
++            d.val[2] = vmlaq_n_f32(d.val[2], o.val[2], bv);
++            vst3q_f32(&dst[i].x, d);
++        }
++#endif
++        for (; i < n; i++) {
++            dst[i].x = off[i].x * bv + dst[i].x;
++            dst[i].y = off[i].y * bv + dst[i].y;
++            dst[i].z = off[i].z * bv + dst[i].z;
++        }
++    }
++}
++#endif
++
+ //NGC MATCH
+ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
+   float blendval;
+@@ -703,12 +793,72 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
  
    blendgeom = item->geom->blendgeom;
    DBTimerStart(4);
@@ -4034,6 +4087,113 @@ index b2137e9..f3a18a5 100644
    DBTimerStart(0xd);
    PPCMtmmcr0(0x8b);
    PPCMtmmcr1(0x78400000);
+   geom = item->geom;
+   srcverts = (struct nuvtx_sk3tc1_s *)geom->hVB;
+   destvb = (struct nuvec_s *)geom->blendgeom->hVB;
++#ifdef PORT
++  {
++    static int check = -1;
++    if (check < 0) check = getenv("CWOC_CHECKBLEND") != NULL;
++    port_blend_positions(destvb, srcverts, item->geom->vtxcnt, blendgeom, *item->blendvals);
++    if (!check) goto blend_done;
++    /* check: keep the fast result aside and run the original loop below */
++    {
++      static struct nuvec_s *fast;
++      static int fast_n;
++      if (fast_n < item->geom->vtxcnt) {
++        free(fast);
++        fast_n = item->geom->vtxcnt;
++        fast = malloc(sizeof(*fast) * fast_n);
++      }
++      memcpy(fast, destvb, sizeof(*fast) * item->geom->vtxcnt);
++      for (i = 0; i < item->geom->vtxcnt; i++) {
++        destvb[i] = srcverts[i].pnt;
++        for (j = 0; j < blendgeom->nblends; j++) {
++          LCBlendOffsets = blendgeom->blend_offsets[j];
++          if (LCBlendOffsets != 0) {
++            blendval = (*item->blendvals)[blendgeom->ix[j]];
++            if (blendval != 0.0f) {
++              destvb[i].x = LCBlendOffsets[i].x * blendval + destvb[i].x;
++              destvb[i].y = blendgeom->blend_offsets[j][i].y * blendval + destvb[i].y;
++              destvb[i].z = blendgeom->blend_offsets[j][i].z * blendval + destvb[i].z;
++            }
++          }
++        }
++      }
++      {
++        static unsigned items, bad;
++        extern void port_log(const char *fmt, ...);
++        items++;
++        if (memcmp(fast, destvb, sizeof(*fast) * item->geom->vtxcnt)) bad++;
++        if (items % 2000 == 0) port_log("blend check: %u of %u items differ", bad, items);
++      }
++    }
++    goto blend_done;
++  }
++#endif
+     for (i = 0; i < item->geom->vtxcnt; i++) {
+         destvb->x = srcverts->pnt.x;
+         destvb->y = srcverts->pnt.y;
+@@ -727,6 +877,9 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
+       destvb = destvb + 1;
+       srcverts = srcverts + 1;
+     }
++#ifdef PORT
++blend_done:
++#endif
+   PPCMtmmcr1(0);
+   PPCMtmmcr0(0);
+   DBTimerEnd(0xd);
+@@ -756,7 +909,10 @@ void NuRndrSkinItem2(struct nugeomitem_s *item) {
+         return;
+     }
+     DBTimerStart(5);
++    MSUB_B(11, 8);
+     SetupShaders(item);
++    MSUB_E(11);
++    MSUB_B(12, 8);
+     GS_LoadWorldMatrixIdentity();
+     GS_SetVertexSource((float *)item->geom->hVB);
+     for (prim = item->geom->prim; prim != NULL; prim = prim->next) {
+@@ -768,6 +924,7 @@ void NuRndrSkinItem2(struct nugeomitem_s *item) {
+             NuErrorProlog("C:/source/crashwoc/code/nu3dx/nurndr.c",0xf4e)("NuRndrGeomItem : Unknown primitive type!");
+         }
+     }
++    MSUB_E(12);
+     DBTimerEnd(5);
+     return;
+ }
+@@ -791,22 +948,30 @@ void NuRndrItem(struct nurndritem_s *item) {
+         switch (item->type) {
+                     case NURNDRITEM_GEOM2D:
+                         DBTimerStart(0x1e);
++                        MSUB_B(10, 8);
+                         NuRndr2dItem((struct nugeomitem_s *)item);
++                        MSUB_E(10);
+                         DBTimerEnd(0x1e);
+                     break;
+                     case NURNDRITEM_GEOM3D:
+                         DBTimerStart(0x1f);
++                        MSUB_B(8, 8);
+                         NuRndrGeomItem((struct nugeomitem_s *)item);
++                        MSUB_E(8);
+                         DBTimerEnd(0x1f);
+                         break;
+                     case NURNDRITEM_SKIN3D2:
+                         DBTimerStart(0x20);
++                        MSUB_B(9, 8);
+                         NuRndrSkinItem2((struct nugeomitem_s *)item);
++                        MSUB_E(9);
+                         DBTimerEnd(0x20);
+                         break;
+                     case NURNDRITEM_GEOMFACE:
+                         DBTimerStart(0x22);
++                        MSUB_B(10, 8);
+                         NuRndrFaceItem((struct nugeomitem_s *)item);
++                        MSUB_E(10);
+                         DBTimerEnd(0x22);
+                         break;
+                     default:
 diff --git a/src/nu3dx/nurndr.h b/src/nu3dx/nurndr.h
 index 2db1eb2..28a5c02 100644
 --- a/src/nu3dx/nurndr.h
@@ -6154,10 +6314,10 @@ index 5dc1fb8..6281ae5 100644
      if (NUID - 0x270eU > 1) {
      NUID--;
 diff --git a/src/system/port.c b/src/system/port.c
-index 8547093..ad8cd7c 100644
+index 8547093..de42c8a 100644
 --- a/src/system/port.c
 +++ b/src/system/port.c
-@@ -337,6 +337,14 @@ void SetupShaders(struct nugeomitem_s* geomitem) {
+@@ -337,14 +337,28 @@ void SetupShaders(struct nugeomitem_s* geomitem) {
          return;
      }
      shader = (enum shadertypes_e)geomitem->hShader;
@@ -6172,7 +6332,21 @@ index 8547093..ad8cd7c 100644
      mtl = geomitem->geom->mtl;
      vtxtype = geomitem->geom->vtxtype;
      if (mtl != NULL) {
-@@ -362,6 +370,25 @@ void SetupShaders(struct nugeomitem_s* geomitem) {
+         num_bumplights = mtl->attrib.lighting;
+     }
++#ifdef PORT
++    { extern void port_msub_begin(int k, int rate); port_msub_begin(13, 8); }
++#endif
+     if (num_bumplights != 2) {
+         NuLightSetStoredLights((s32)(geomitem->hdr).lights_index);
+     }
++#ifdef PORT
++    { extern void port_msub_end(int k); port_msub_end(13); }
++#endif
+     if ((shader != 0x80) && (vtxtype != Shaders[shader].vertshader)) {
+         shader = NO_SHADER;
+     }
+@@ -362,6 +376,25 @@ void SetupShaders(struct nugeomitem_s* geomitem) {
          matWorld = *geomitem->mtx;
      }
  
@@ -6198,7 +6372,7 @@ index 8547093..ad8cd7c 100644
      NuMtxInv(&invWorld, &matWorld);
      NuMtxMulH(&matWorldView, &matWorld, &matView);
      NuMtxInv(&invWorldView, &matWorldView);
-@@ -375,6 +402,7 @@ void SetupShaders(struct nugeomitem_s* geomitem) {
+@@ -375,6 +408,7 @@ void SetupShaders(struct nugeomitem_s* geomitem) {
      NuMtxTranspose(&matViewProj, &matViewProj);
      NuMtxTranspose(&matWorldView, &matWorldView);
      NuMtxTranspose(&matWorld, &matWorld);
@@ -6206,7 +6380,7 @@ index 8547093..ad8cd7c 100644
      GS_SetLightingNone();
      currentshader = shader;
  
-@@ -539,7 +567,11 @@ void SetupShaders(struct nugeomitem_s* geomitem) {
+@@ -539,7 +573,11 @@ void SetupShaders(struct nugeomitem_s* geomitem) {
          case BLENDSKINGLASS2: // 18
              CV_WORLDVIEWPROJ = *(struct _GSMATRIX*) &matViewProj;
              CV_WORLDVIEW = *(struct _GSMATRIX*) &matWorld;
