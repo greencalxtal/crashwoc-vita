@@ -2828,11 +2828,50 @@ static void rt_transform(int f, int vend) {
     rt_gap(fr, vend);
 }
 
-/* CWOC_FPS=1: frames per second shown in the top-left corner (in 4:3 it sits
- * in the black band). Drawn on the render thread just before the swap with
- * scissored glClear rectangles (a 3x5 font scaled 3x): no shader, texture or
- * vertex data. The rate is of frames actually presented, every 0.5 s. */
-static int g_fps_overlay;
+/* Frames per second in the top-left corner (in 4:3 it sits in the black
+ * band): pause menu > OPTIONS > SHOW FPS (port_hooks.c), saved in
+ * <save dir>/fps.txt; CWOC_FPS=1 turns it on when there is no such file.
+ * Drawn on the render thread just before the swap with scissored glClear
+ * rectangles (a 3x5 font scaled 3x): no shader, texture or vertex data. The
+ * rate is of frames actually presented, every 0.5 s. */
+static volatile int g_fps_overlay = -1;
+
+static void fps_overlay_path(char *buf, size_t n) {
+    extern const char *port_save_dir(void);
+    snprintf(buf, n, "%s/fps.txt", port_save_dir());
+}
+
+int port_fps_overlay_on(void) {
+    if (g_fps_overlay < 0) {
+        char path[512];
+        FILE *f;
+        int v = getenv("CWOC_FPS") && getenv("CWOC_FPS")[0] == '1';
+        fps_overlay_path(path, sizeof(path));
+        f = fopen(path, "r");
+        if (f) {
+            int r = 0;
+            if (fscanf(f, "%d", &r) == 1) v = r != 0;
+            fclose(f);
+        }
+        g_fps_overlay = v;
+        port_log("video: fps counter %s", v ? "on" : "off");
+    }
+    return g_fps_overlay;
+}
+
+/* pause menu > OPTIONS (port_hooks.c) */
+void port_fps_overlay_toggle(void) {
+    char path[512];
+    FILE *f;
+    g_fps_overlay = !port_fps_overlay_on();
+    fps_overlay_path(path, sizeof(path));
+    f = fopen(path, "w");
+    if (f) {
+        fprintf(f, "%d\n", g_fps_overlay);
+        fclose(f);
+    }
+    port_log("video: fps counter %s", g_fps_overlay ? "on" : "off");
+}
 static void rt_fps_overlay(void) {
     /* 3x5 glyphs, rows top to bottom, 3 bits each (bit 2 = left column) */
     static const unsigned short glyph[11] = {
@@ -2967,7 +3006,7 @@ static void exec_cmds(int f, int from, int to) {
                 g_gl.valid = 0;
                 g_r3_late++;
             }
-            if (g_fps_overlay) rt_fps_overlay();
+            if (g_fps_overlay > 0) rt_fps_overlay();
             t0 = port_prof_now();
             if (g_r3_frames >= 300) {
                 port_log("gx: 3D at %d%%: %u frames, scaled up at the HUD %u, at the swap %u", g_res3d_pct_rt, g_r3_frames,
@@ -4440,7 +4479,7 @@ void port_gx_init(void) {
     }
 #endif
     g_gpuexp = getenv("CWOC_GPUEXP") ? getenv("CWOC_GPUEXP")[0] : 0;
-    g_fps_overlay = getenv("CWOC_FPS") && getenv("CWOC_FPS")[0] == '1';
+    port_fps_overlay_on(); /* load the setting before the render thread reads it */
     if (getenv("CWOC_RES3D")) {
         g_res3d_pct = atoi(getenv("CWOC_RES3D"));
         if (g_res3d_pct < 25 || g_res3d_pct >= 100) g_res3d_pct = 0;

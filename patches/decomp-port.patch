@@ -1138,7 +1138,7 @@ index 3f05987..3c51746 100644
  //NGC MATCH
  s32 CombinationCharacterBD(char c0,char c1) {
 diff --git a/src/gamecode/game.c b/src/gamecode/game.c
-index 061c06d..c86820b 100644
+index 061c06d..86e0532 100644
 --- a/src/gamecode/game.c
 +++ b/src/gamecode/game.c
 @@ -389,7 +389,11 @@ extern char* tYES[6];
@@ -1309,8 +1309,8 @@ index 061c06d..c86820b 100644
                  cur->y_max = 3;
              }
 +#ifdef PORT
-+            /* screen mode + frame lock before DONE (port/src/game/port_hooks.c) */
-+            cur->y_max += 2;
++            /* screen mode, frame lock and fps counter before DONE (port/src/game/port_hooks.c) */
++            cur->y_max += 3;
 +#endif
              return;
          case 7:

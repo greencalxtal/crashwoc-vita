@@ -112,7 +112,7 @@ Useful environment variables: `CWOC_SKIP_LOGOS=1`, `CWOC_INTRO=0` (skip the cut 
 `CWOC_WARP=level@frame` (request a level change), `CWOC_BATCHSTAT=1` (why GL
 batches break), `CWOC_IEEE=1` (PC: keep denormals),
 `CWOC_FIXEDTIME=1` (deterministic clock: 1/60 s per frame), `CWOC_AUDIO_DUMP=file.wav`, `CWOC_NOAUDIO=1`, `CWOC_DUMPSHADERS=<dir>`,
-`CWOC_MIPMAPS=0` (no mipmaps), `CWOC_FPS=1` (frames per second in the top-left corner), `CWOC_RES3D=<percent>` (the 3D of game frames at that resolution, HUD native), `CWOC_LONGFRAME=ms` (log frames longer than ms, default 100,
+`CWOC_MIPMAPS=0` (no mipmaps), `CWOC_FPS=1` (frames per second in the top-left corner when `<save dir>/fps.txt` does not exist; pause > OPTIONS > SHOW FPS), `CWOC_RES3D=<percent>` (the 3D of game frames at that resolution, HUD native), `CWOC_LONGFRAME=ms` (log frames longer than ms, default 100,
 with file-read time), `CWOC_CRELOG=1` (per-frame creature positions/AI state),
 `CWOC_DISPLAY=4:3|stretch|wide` + `CWOC_WINSIZE=960x544` (display mode; on the
 Vita pause > OPTIONS > SCREEN, saved in `<save dir>/display.txt`),

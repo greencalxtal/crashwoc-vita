@@ -83,6 +83,7 @@ the game: this project contains **no game files**.
 | Start | Start / pause |
 | Start > Options > Screen | Screen mode: 4:3, stretched, widescreen (saved) |
 | Start > Options > Steady FPS | Frame lock on/off (smoother pacing, may cap the frame rate) |
+| Start > Options > Show FPS | Frames per second in the top-left corner on/off (saved) |
 
 Saves: `ux0:data/crashwoc/save/`. Log: `ux0:data/crashwoc/crashwoc.log`.
 

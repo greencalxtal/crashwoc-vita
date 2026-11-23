@@ -49,7 +49,8 @@ void *port_hook_LoadBuggyData(void *data, int indx) {
  * two entries before DONE: GetMenuInfo (game.c) counts them, the translated
  * DrawMenu draws them through this DrawMenuEntry hook, and the ProcMenu hook
  * changes them (cross / D-pad right = next, D-pad left = previous). Both are
- * saved in the save directory (display.txt, framelock.txt) as before. */
+ * saved in the save directory (display.txt, framelock.txt) as before. A third
+ * entry shows or hides the frames-per-second counter (fps.txt, gx_gl.c). */
 #define PORT_MENU_OPTIONS 6
 #define PORT_SFX_YES 0x36
 extern char *tDONE[6];
@@ -63,6 +64,8 @@ int port_display_mode(void);
 void port_display_step(int dir);
 int port_pace_lock_on(void);
 void port_pace_lock_toggle(void);
+int port_fps_overlay_on(void);
+void port_fps_overlay_toggle(void);
 void DrawMenuEntry(struct cursor_s *cursor, char *txt, float *x, float *y, s32 *i);
 void ProcMenu(struct cursor_s *cursor, struct nupad_s *pad);
 
@@ -76,6 +79,8 @@ static const char *const k_mode[3][6] = {
 };
 static const char *const k_lock[6] = { "STEADY FPS", "FPS STABLES", "STABILE FPS", "FPS STABILI", "FPS ESTABLES",
                                         "STABIELE FPS" };
+static const char *const k_fps[6] = { "SHOW FPS", "AFFICHER FPS", "FPS ANZEIGEN", "MOSTRA FPS", "MOSTRAR FPS",
+                                      "FPS TONEN" };
 
 static int menu_lang(void) {
     return (Game.language >= 0 && Game.language < 6) ? Game.language : 0;
@@ -83,7 +88,7 @@ static int menu_lang(void) {
 
 void port_hook_DrawMenuEntry(struct cursor_s *cursor, char *txt, float *x, float *y, s32 *i) {
     if (cursor->menu == PORT_MENU_OPTIONS && txt == tDONE[menu_lang()]) {
-        static char line[2][64];
+        static char line[3][64];
         int l = menu_lang(), m = port_display_mode();
         /* the width scale the (translated) DrawMenu set for DONE, used for
          * ours too; DrawMenuEntry resets it after each entry */
@@ -91,10 +96,13 @@ void port_hook_DrawMenuEntry(struct cursor_s *cursor, char *txt, float *x, float
         if (m < 0 || m > 2) m = 0;
         snprintf(line[0], sizeof(line[0]), "%s: %s", k_screen[l], k_mode[m][l]);
         snprintf(line[1], sizeof(line[1]), "%s: %s", k_lock[l], port_pace_lock_on() ? tON[l] : tOFF[l]);
+        snprintf(line[2], sizeof(line[2]), "%s: %s", k_fps[l], port_fps_overlay_on() ? tON[l] : tOFF[l]);
         dme_sx = sx;
         DrawMenuEntry(cursor, line[0], x, y, i);
         dme_sx = sx;
         DrawMenuEntry(cursor, line[1], x, y, i);
+        dme_sx = sx;
+        DrawMenuEntry(cursor, line[2], x, y, i);
         dme_sx = sx;
     }
     DrawMenuEntry(cursor, txt, x, y, i);
@@ -117,14 +125,15 @@ void port_hook_ProcMenu(struct cursor_s *cursor, struct nupad_s *pad) {
     if (menu0 != PORT_MENU_OPTIONS || cursor->menu != PORT_MENU_OPTIONS || cursor->y != y0 || pad == NULL)
         return;
     if (lock0 != 0 || wait0 != 0 || cursor->wait != 0 || item0 == 0 || busy) return;
-    if (cursor->y != cursor->y_max - 2 && cursor->y != cursor->y_max - 1) return;
-    if (cursor->y == cursor->y_max - 2) {
+    if (cursor->y < cursor->y_max - 3 || cursor->y > cursor->y_max - 1) return;
+    if (cursor->y == cursor->y_max - 3) {
         if (db & 0x8000) port_display_step(-1);         /* D-pad left */
         else if (db & (0x2000 | 0x840)) port_display_step(1); /* right, cross, start */
         else return;
     } else {
         if (!(db & (0x8000 | 0x2000 | 0x840))) return;
-        port_pace_lock_toggle();
+        if (cursor->y == cursor->y_max - 2) port_pace_lock_toggle();
+        else port_fps_overlay_toggle();
     }
     GameSfx(PORT_SFX_YES, NULL);
 }
