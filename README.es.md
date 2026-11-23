@@ -20,7 +20,9 @@ tu propia copia del juego: este proyecto **no incluye archivos del juego**.
   música y sonido.
 - 30–60 fps según la zona. Las escenas cargadas (muchos enemigos, partículas,
   vapor) pueden bajar de 30; **FPS estables** (pausa > Opciones) bloquea los fps para un ritmo
-  más parejo.
+  más parejo. Donde la GPU marca los fps, el 3D (no el HUD ni los menús) se
+  dibuja al 85 % de la resolución y se escala; **Mostrar FPS** (pausa >
+  Opciones) enseña los fps.
 - *Crash Blast* (el minijuego de Game Boy Advance por cable link del menú
   principal) no está disponible: la Vita no tiene GBA.
 - Problemas conocidos: puede que algunas plataformas aplastadoras de *Earth

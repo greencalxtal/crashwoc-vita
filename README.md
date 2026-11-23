@@ -19,7 +19,9 @@ the game: this project contains **no game files**.
   (mech, mine kart, buggy, glider...), saves, music and sound.
 - 30–60 fps depending on the area. Busy scenes (lots of enemies, particles,
   steam) can drop below 30; **Steady FPS** (pause > Options) locks the frame rate for
-  steadier pacing.
+  steadier pacing. Where the GPU sets the frame rate, the 3D (not the HUD or
+  menus) is drawn at 85 % of the resolution and scaled up; **Show FPS**
+  (pause > Options) shows the frame rate.
 - *Crash Blast* (the Game Boy Advance link-cable minigame in the main menu)
   is not available: there is no GBA on the Vita.
 - Known issues: some crushing platforms in *Earth Crisis* (`a\earth_r`) may

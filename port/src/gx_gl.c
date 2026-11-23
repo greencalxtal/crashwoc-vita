@@ -1038,6 +1038,78 @@ static GLuint g_r3_fbo, g_r3_tex, g_r3_rb;
 static int g_r3_w, g_r3_h, g_r3_dw, g_r3_dh; /* target size, and the drawable it was made for */
 static unsigned g_r3_frames, g_r3_hud, g_r3_late;
 static int g_res3d_pct_rt;         /* copy of the percent for the render thread (set at init) */
+static int g_res3d_dyn;            /* 1: the controller below decides (default); 0: always low (CWOC_RES3D=N) */
+static volatile int g_res3d_low;   /* render thread -> game thread: draw the 3D small from the next frame */
+
+/* Dynamic 3D resolution: the 3D goes small only while the GPU sets the frame
+ * rate. The render thread measures, per 0.5 s window, the time between
+ * presents (T) and the time blocked in the swap (S). GPU bound: S > 2.5 ms
+ * and T over the target by 7 % (16.7 ms; 33.3 with the frame lock, where the
+ * game thread sleeps instead). Lowering when the GPU did not even fill a 60 Hz
+ * frame would cost sharpness for nothing, and at the 60 cap the swap waits
+ * for the vblank, not for the GPU.
+ * - native: 2 GPU-bound windows in a row -> small; T is kept as the native
+ *   GPU cost (gnat)
+ * - small: still GPU bound -> stay. Else back to native (a probe) after 2
+ *   windows in a row with T at the 60 cap (within 2 %: snow_m small runs at
+ *   57.8 fps, not capped) or with the CPU alone clearly slower than the native
+ *   GPU was (T >= 1.05 gnat), or after a hold (8 s). A probe that is GPU
+ *   bound within 2 windows goes back small and doubles the hold (up to
+ *   64 s); one that lasts 4 s resets it. */
+static void rt_res3d_ctrl(uint64_t t_swap0, uint64_t now) {
+    extern int port_pace_lock_on(void);
+    static uint64_t last, win_t0, low_at, probe_at, probe_t0;
+    static double sum_s;
+    static int n, streak, exits, probing, hold_ms = 8000;
+    static double gnat;
+    double T, S, target;
+    int gpu;
+    if (!g_res3d_dyn || !g_res3d_pct_rt) return;
+    if (!last || now - last > 100000) { /* start, or a load / long hitch: start a new window */
+        last = win_t0 = now;
+        sum_s = 0;
+        n = 0;
+        return;
+    }
+    last = now;
+    sum_s += (double)(now - t_swap0);
+    n++;
+    if (now - win_t0 < 500000) return;
+    T = (double)(now - win_t0) / n;
+    S = sum_s / n;
+    win_t0 = now;
+    sum_s = 0;
+    n = 0;
+    target = port_pace_lock_on() ? 33333.0 : 16667.0;
+    gpu = S > 2500.0 && T > target * 1.07;
+    if (!g_res3d_low) {
+        if (probing && !gpu && now - probe_t0 >= 4000000) { probing = 0; hold_ms = 8000; }
+        if (!gpu) { streak = 0; return; }
+        if (++streak < 2) return;
+        streak = 0;
+        if (probing) hold_ms = hold_ms * 2 > 64000 ? 64000 : hold_ms * 2;
+        probing = 0;
+        gnat = T;
+        g_res3d_low = 1;
+        low_at = now;
+        probe_at = now + (uint64_t)hold_ms * 1000;
+        port_log("gx: 3D at %d%% (GPU bound: frame %.1f ms, swap wait %.1f ms; next try native in %d s)", g_res3d_pct_rt,
+                 T / 1000.0, S / 1000.0, hold_ms / 1000);
+        return;
+    }
+    if (gpu) { exits = 0; return; }
+    if (T <= target * 1.02 || T >= gnat * 1.05) exits++;
+    else exits = 0;
+    if (exits >= 2 || now >= probe_at) {
+        exits = 0;
+        g_res3d_low = 0;
+        probing = 1;
+        probe_t0 = now;
+        streak = 0;
+        port_log("gx: 3D native again after %.1f s (frame %.1f ms, swap wait %.1f ms, native was %.1f ms)",
+                 (now - low_at) / 1e6, T / 1000.0, S / 1000.0, gnat / 1000.0);
+    }
+}
 
 /* a window rectangle (GL, bottom-left origin) mapped into the 3D target */
 static void r3_map(int *x, int *y, int *w, int *h) {
@@ -3016,8 +3088,12 @@ static void exec_cmds(int f, int from, int to) {
             g_ws_rt = "present";
             port_video_present(c->u.present.frame);
             g_ws_rt = "-";
-            g_prof[PROF_RT_SWAP] += port_prof_now() - t0;
-            g_prof_cnt[PROF_RT_SWAP]++;
+            {
+                uint64_t t1 = port_prof_now();
+                g_prof[PROF_RT_SWAP] += t1 - t0;
+                g_prof_cnt[PROF_RT_SWAP]++;
+                rt_res3d_ctrl(t0, t1);
+            }
             break;
         }
         }
@@ -4428,7 +4504,8 @@ static void exec_copy(const RCmd *c) {
  * screen when the HUD scene starts (tbslotBegin slot 31, crashlib.c); the
  * HUD, menus and fades are drawn at the native resolution on top. A frame is
  * a game frame when the one before it had a HUD scene, so title screens and
- * menus outside the game stay native. 0 / unset: off. */
+ * menus outside the game stay native. Unset: 85 %, only while the GPU sets
+ * the frame rate (rt_res3d_ctrl); N: always N %; 0: off. */
 static int g_res3d_pct;         /* game thread: requested percent (0 = off) */
 static int g_hud_prev;          /* game thread: the last frame had a HUD scene */
 static int g_frame_lowres;      /* game thread: this frame's 3D goes to the small target */
@@ -4439,7 +4516,7 @@ void port_gx_begin_frame(void) {
     port_gx_flush();
     g_frame++;
     if (g_trace > 0 && port_frame_count() >= g_trace_from) port_log("gx: frame %d", port_frame_count());
-    g_frame_lowres = g_res3d_pct > 0 && g_hud_prev;
+    g_frame_lowres = g_res3d_pct > 0 && g_hud_prev && (!g_res3d_dyn || g_res3d_low);
     g_frame_composited = 0;
     g_hud_prev = 0;
     rq_ensure(1, 0, 0);
@@ -4480,11 +4557,14 @@ void port_gx_init(void) {
 #endif
     g_gpuexp = getenv("CWOC_GPUEXP") ? getenv("CWOC_GPUEXP")[0] : 0;
     port_fps_overlay_on(); /* load the setting before the render thread reads it */
-    if (getenv("CWOC_RES3D")) {
-        g_res3d_pct = atoi(getenv("CWOC_RES3D"));
+    {
+        const char *e = getenv("CWOC_RES3D");
+        g_res3d_dyn = !e || !e[0];
+        g_res3d_pct = g_res3d_dyn ? 85 : atoi(e);
         if (g_res3d_pct < 25 || g_res3d_pct >= 100) g_res3d_pct = 0;
         g_res3d_pct_rt = g_res3d_pct;
-        port_log("gx: 3D resolution %d%% (CWOC_RES3D)", g_res3d_pct ? g_res3d_pct : 100);
+        if (!g_res3d_pct) port_log("gx: 3D resolution native (CWOC_RES3D)");
+        else port_log("gx: 3D resolution %d%% %s", g_res3d_pct, g_res3d_dyn ? "while the GPU sets the frame rate" : "always (CWOC_RES3D)");
     }
     if (g_gpuexp) port_log("gx: GPU experiment '%c' (measurement only)", g_gpuexp);
     g_trace = getenv("CWOC_GXTRACE") ? atoi(getenv("CWOC_GXTRACE")) : 0;
