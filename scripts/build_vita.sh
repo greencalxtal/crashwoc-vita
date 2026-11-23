@@ -13,6 +13,14 @@ dol="$here/decomp/orig/GCBE7D/sys/main.dol"
 ( cd "$here/decomp" && python3 configure.py && ninja build/GCBE7D/config.json )
 extra=()
 [ -n "${CWOC_LIVEAREA_DIR:-}" ] && extra+=("-DCWOC_LIVEAREA_DIR=$CWOC_LIVEAREA_DIR")
+# vitaGL with the shader disk cache (scripts/build_vitagl.sh); CWOC_SDK_VITAGL=1
+# links the VitaSDK package instead
+if [ -n "${CWOC_SDK_VITAGL:-}" ]; then
+  extra+=("-DPORT_VITAGL_DIR=")
+else
+  "$here/scripts/build_vitagl.sh"
+  extra+=("-DPORT_VITAGL_DIR=$here/build-vitagl")
+fi
 cmake -S "$here/port" -B "$here/build-vita" -G Ninja -DPORT_VITA=ON \
   -DCWOC_DOL="$dol" -DCWOC_ASM_DIR="$here/decomp/build/GCBE7D/asm" "${extra[@]}"
 ninja -C "$here/build-vita"

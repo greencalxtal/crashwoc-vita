@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 void port_os_init(void);
 void port_fs_init(void);
@@ -127,7 +128,22 @@ void port_platform_init(int argc, char **argv) {
         extern void port_splash_hold(void);
         port_splash_hold(); /* keep the boot splash up for a moment */
     }
-    vglInitExtended(0, w, h, 8 * 1024 * 1024, SCE_GXM_MULTISAMPLE_NONE); /* MSAA off: fill rate */
+    {
+        /* vitaGL built with HAVE_SHADER_CACHE (scripts/build_vitagl.sh) keeps
+         * each compiled shader here, keyed by its source only: the compiler
+         * option (CWOC_SHOPT) goes in the folder name. Next to the program
+         * cache of gx_gl.c (CWOC_SHCACHEDIR moves both). A no-op with the
+         * VitaSDK vitaGL. */
+        const char *d = getenv("CWOC_SHCACHEDIR"), *o = getenv("CWOC_SHOPT");
+        char path[256];
+        uint64_t t0 = port_prof_now();
+        if (!d || !d[0]) d = "ux0:data/crashwoc/shadercache";
+        mkdir(d, 0777);
+        snprintf(path, sizeof(path), "%s/vgl%s", d, o && o[0] >= '0' && o[0] <= '4' ? o : "");
+        vglSetShaderCachePath(path);
+        vglInitExtended(0, w, h, 8 * 1024 * 1024, SCE_GXM_MULTISAMPLE_NONE); /* MSAA off: fill rate */
+        port_log("video: vitaGL init %.0f ms, shader cache %s", (port_prof_now() - t0) / 1000.0, path);
+    }
     {
         /* CWOC_SHOPT=0..4 (shark_opt O0, O1, O2, O3 = vitaGL default, Ofast):
          * optimisation level of the runtime shader compiler, for weighing

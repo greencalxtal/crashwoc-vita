@@ -155,8 +155,20 @@ if(PORT_VITA)
   # libshacccg.suprx on the console), sceCtrl for input, SDL2 only for timers.
   include("$ENV{VITASDK}/share/vita.cmake" REQUIRED)
   target_compile_definitions(cwoc_objs PRIVATE PORT_VITA=1)
+  # PORT_VITAGL_DIR: a vitaGL built by scripts/build_vitagl.sh (lib/ and
+  # include/), linked instead of the VitaSDK one (adds the shader disk cache)
+  set(PORT_VITAGL_DIR "" CACHE PATH "vitaGL from scripts/build_vitagl.sh (empty: the VitaSDK one)")
+  if(PORT_VITAGL_DIR)
+    set(_vgl_lib "${PORT_VITAGL_DIR}/lib/libvitaGL.a")
+    target_include_directories(cwoc_objs BEFORE PRIVATE "${PORT_VITAGL_DIR}/include")
+    target_include_directories(crashwoc BEFORE PRIVATE "${PORT_VITAGL_DIR}/include")
+    set(_vgl_link "${_vgl_lib}")
+    message(STATUS "vitaGL: ${_vgl_lib}")
+  else()
+    set(_vgl_lib "$ENV{VITASDK}/arm-vita-eabi/lib/libvitaGL.a")
+    set(_vgl_link vitaGL)
+  endif()
   # identity of the linked vitaGL: part of the shader program cache key (gx_gl.c)
-  set(_vgl_lib "$ENV{VITASDK}/arm-vita-eabi/lib/libvitaGL.a")
   if(EXISTS "${_vgl_lib}")
     file(SHA256 "${_vgl_lib}" _vgl_sha)
     string(SUBSTRING "${_vgl_sha}" 0 12 PORT_VITAGL_ID)
@@ -184,7 +196,7 @@ if(PORT_VITA)
   # size (the .rodata pad in port_main.c only moved the boundary).
   target_link_options(crashwoc PRIVATE -Wl,--defsym,__sce_headroom=0x2000)
   target_link_libraries(crashwoc
-    vitaGL vitashark SceShaccCgExt mathneon taihen_stub SceShaccCg_stub
+    ${_vgl_link} vitashark SceShaccCgExt mathneon taihen_stub SceShaccCg_stub
     SDL2 SceKernelDmacMgr_stub SceGxm_stub SceDisplay_stub SceCtrl_stub SceAppMgr_stub
     SceAppUtil_stub SceSysmodule_stub SceCommonDialog_stub SceIme_stub SceAudio_stub
     SceAudioIn_stub SceTouch_stub SceHid_stub SceMotion_stub ScePower_stub SceProcessmgr_stub
