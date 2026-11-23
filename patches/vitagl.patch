@@ -47,10 +47,21 @@ index e5b3d82..2a26c3e 100644
  			if (f >= 0) {
  				size_t sz = sceIoLseek(f, 0, SCE_SEEK_END);
 diff --git a/source/vgl.c b/source/vgl.c
-index 014e790..85e9d64 100644
+index 014e790..695dabf 100644
 --- a/source/vgl.c
 +++ b/source/vgl.c
-@@ -206,23 +206,11 @@ GLboolean vglInitWithCustomSizes(int pool_size, int width, int height, int ram_p
+@@ -130,6 +130,10 @@ static uint8_t *circular_data_pool_limit;
+ #endif
+ uint32_t circular_data_pool_size = CIRCULAR_POOL_SIZE_DEF;
+ uint8_t *vgl_reserve_data_pool(uint32_t size) {
++	// keep every reservation 8-byte aligned: an odd-sized one (16-bit indices)
++	// left the next float data misaligned (glBlitFramebuffer's vertices: a
++	// data abort on the console)
++	size = (size + 7) & ~7u;
+ #ifndef CIRCULAR_POOL_SPEEDHACK
+ 	uint8_t *res = circular_data_pool_ptr[vgl_circular_idx];
+ 	circular_data_pool_ptr[vgl_circular_idx] += size;
+@@ -206,23 +210,11 @@ GLboolean vglInitWithCustomSizes(int pool_size, int width, int height, int ram_p
  	sceIoMkdir(vgl_shader_cache_path, 0777);
  	sprintf(fname, "%s/v", vgl_shader_cache_path);
  	sceIoMkdir(fname, 0777);
