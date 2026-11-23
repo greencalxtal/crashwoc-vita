@@ -2828,6 +2828,57 @@ static void rt_transform(int f, int vend) {
     rt_gap(fr, vend);
 }
 
+/* CWOC_FPS=1: frames per second shown in the top-left corner (in 4:3 it sits
+ * in the black band). Drawn on the render thread just before the swap with
+ * scissored glClear rectangles (a 3x5 font scaled 3x): no shader, texture or
+ * vertex data. The rate is of frames actually presented, every 0.5 s. */
+static int g_fps_overlay;
+static void rt_fps_overlay(void) {
+    /* 3x5 glyphs, rows top to bottom, 3 bits each (bit 2 = left column) */
+    static const unsigned short glyph[11] = {
+        075557, 026227, 071747, 071717, 055711, 074717, 074757, 071111, 075757, 075717, 000002, /* 0-9 . */
+    };
+    static uint64_t t_last;
+    static unsigned n;
+    static char txt[8] = "";
+    const int px = 3, adv = 4 * px, x0 = 6, top = 6;
+    uint64_t now = port_prof_now();
+    int i, len, r, c;
+    n++;
+    if (!t_last) t_last = now;
+    if (now - t_last >= 500000) {
+        snprintf(txt, sizeof(txt), "%.1f", n * 1e6 / (double)(now - t_last));
+        t_last = now;
+        n = 0;
+    }
+    len = (int)strlen(txt);
+    if (!len) return;
+    g_gl.valid = 0;
+    glViewport(0, 0, g_win_w, g_win_h);
+    glEnable(GL_SCISSOR_TEST);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+    glScissor(x0 - px, g_win_h - top - 7 * px, len * adv + px, 7 * px);
+    glClear(GL_COLOR_BUFFER_BIT);
+    glClearColor(1.0f, 1.0f, 0.4f, 1.0f);
+    for (i = 0; i < len; i++) {
+        int g = txt[i] == '.' ? 10 : txt[i] - '0';
+        if (g < 0 || g > 10) continue;
+        for (r = 0; r < 5; r++) {
+            int bits = (glyph[g] >> (3 * (4 - r))) & 7;
+            for (c = 0; c < 3; c++) {
+                int run = 0;
+                while (c + run < 3 && (bits & (4 >> (c + run)))) run++;
+                if (run) {
+                    glScissor(x0 + i * adv + c * px, g_win_h - top - px - (r + 1) * px, run * px, px);
+                    glClear(GL_COLOR_BUFFER_BIT);
+                    c += run;
+                }
+            }
+        }
+    }
+}
+
 static void exec_cmds(int f, int from, int to) {
     RFrame *fr = &g_rf[f];
     int i;
@@ -2910,12 +2961,14 @@ static void exec_cmds(int f, int from, int to) {
             }
             break;
         case CMD_PRESENT: {
-            uint64_t t0 = port_prof_now();
+            uint64_t t0;
             if (g_rt_lowres) { /* no HUD scene this frame: scale up before the swap */
                 r3_composite();
                 g_gl.valid = 0;
                 g_r3_late++;
             }
+            if (g_fps_overlay) rt_fps_overlay();
+            t0 = port_prof_now();
             if (g_r3_frames >= 300) {
                 port_log("gx: 3D at %d%%: %u frames, scaled up at the HUD %u, at the swap %u", g_res3d_pct_rt, g_r3_frames,
                          g_r3_hud, g_r3_late);
@@ -4387,6 +4440,7 @@ void port_gx_init(void) {
     }
 #endif
     g_gpuexp = getenv("CWOC_GPUEXP") ? getenv("CWOC_GPUEXP")[0] : 0;
+    g_fps_overlay = getenv("CWOC_FPS") && getenv("CWOC_FPS")[0] == '1';
     if (getenv("CWOC_RES3D")) {
         g_res3d_pct = atoi(getenv("CWOC_RES3D"));
         if (g_res3d_pct < 25 || g_res3d_pct >= 100) g_res3d_pct = 0;
