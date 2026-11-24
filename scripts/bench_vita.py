@@ -116,6 +116,8 @@ def run_one(out, name, level, rep, frames, install, extra=(), captures=()):
     specf = out / (tag + ".run.json")
     specf.write_text(json.dumps(spec, indent=1))
     r = vau("run", "start", str(specf), *(["--yes"] if install else []))
+    if "result" not in r:
+        raise RuntimeError("vita-agent-use run start refused: %s" % json.dumps(r)[-600:])
     run_id = r["result"]["run_id"]
     t0 = time.time()
     pending = sorted(captures)
