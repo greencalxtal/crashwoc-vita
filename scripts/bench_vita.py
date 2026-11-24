@@ -11,6 +11,12 @@ Needs `serve` running. Paths: VAU_DIR (vita-agent-use checkout), VAU_PYTHON
 
 Usage: scripts/bench_vita.py OUTDIR [--install build-vita/crashwoc.vpk]
        [--reps 3] [--only hub,snow_m] [--frames 3200] [--env KEY=VALUE ...]
+       [--gpuprof FIRST,FRAMES]
+
+--gpuprof (a VPK from CWOC_GPUPROF=1 scripts/build_vita.sh): records the GPU
+work of FRAMES presented frames from FIRST on, downloads capture.csv,
+draws.csv and shaders.txt as <scenario>_<rep>.gpuprof.* and writes the
+report of scripts/gpuprof_report.py next to them.
 """
 import argparse
 import json
@@ -28,6 +34,7 @@ CFG = pathlib.Path(os.environ.setdefault("VITA_AGENT_CONFIG_DIR", str(pathlib.Pa
 EVENTS = CFG / "pc/server/events.jsonl"
 LOG = "ux0:data/crashwoc/crashwoc.log"
 ENV = "ux0:data/crashwoc/env.txt"
+GPUPROF = "ux0:data/crashwoc/gpuprof"
 
 # name -> level for CWOC_WARP (None: stay in the hub, where CWOC_INTRO=0 starts)
 SCENARIOS = {
@@ -103,7 +110,22 @@ def env_text(name, level, frames, extra=()):
     return "\n".join(lines) + "\n"
 
 
-def run_one(out, name, level, rep, frames, install, extra=(), captures=()):
+def fetch_gpuprof(out, tag, logf):
+    """Download a GPU profiler capture of this run (only when its log says the
+    window closed: the files of an earlier run may still be on the Vita)."""
+    text = logf.read_text(errors="replace") if logf.exists() else ""
+    if "gpuprof: window closed" not in text:
+        print("%s: no GPU profiler capture in the log" % tag, flush=True)
+        return
+    for f in ("capture.csv", "draws.csv", "shaders.txt"):
+        vau("fs", "download", "%s/%s" % (GPUPROF, f), str(out / ("%s.gpuprof.%s" % (tag, f))), timeout=1800)
+    rep = subprocess.run([sys.executable, str(HERE / "gpuprof_report.py"), str(out / (tag + ".gpuprof"))],
+                         capture_output=True, text=True)
+    (out / (tag + ".gpuprof.md")).write_text(rep.stdout + rep.stderr)
+    print("%s: GPU profiler report in %s" % (tag, out / (tag + ".gpuprof.md")), flush=True)
+
+
+def run_one(out, name, level, rep, frames, install, extra=(), captures=(), gpuprof=False):
     tag = "%s_%d" % (name, rep)
     envf = out / (tag + ".env.txt")
     envf.write_text(env_text(name, level, frames, extra))
@@ -132,6 +154,8 @@ def run_one(out, name, level, rep, frames, install, extra=(), captures=()):
     dt = time.time() - t0
     logf = out / (tag + ".log")
     vau("fs", "download", LOG, str(logf))
+    if gpuprof:
+        fetch_gpuprof(out, tag, logf)
     summ = subprocess.run([sys.executable, str(HERE / "bench_summary.py"), str(logf), "--events", str(EVENTS),
                            "--run", run_id, "--json", str(out / (tag + ".json"))], capture_output=True, text=True)
     res = json.loads(summ.stdout) if summ.stdout.strip().startswith("{") else {}
@@ -155,7 +179,10 @@ def main():
     ap.add_argument("--frames", type=int, default=3200)
     ap.add_argument("--env", action="append", default=[], help="extra KEY=VALUE for env.txt")
     ap.add_argument("--capture", default="", help="screen captures at these seconds after each run starts, e.g. 110,130")
+    ap.add_argument("--gpuprof", help="FIRST,FRAMES: GPU profiler capture (CWOC_GPUPROF=1 build)")
     a = ap.parse_args()
+    if a.gpuprof:
+        a.env.append("CWOC_GPUPROF=" + a.gpuprof)
     out = pathlib.Path(a.out)
     out.mkdir(parents=True, exist_ok=True)
     names = a.only.split(",") if a.only else list(SCENARIOS)
@@ -164,7 +191,7 @@ def main():
         for rep in range(1, a.reps + 1):
             for name in names:
                 res = run_one(out, name, scenario_level(name), rep, a.frames, install, a.env,
-                              [int(x) for x in a.capture.split(",") if x])
+                              [int(x) for x in a.capture.split(",") if x], bool(a.gpuprof))
                 install = None
                 if res.get("phase") != "completed":
                     print("stopping: run did not complete (locked screen, crash or dialog?)", flush=True)

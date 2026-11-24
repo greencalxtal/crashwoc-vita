@@ -3,6 +3,7 @@
 #include "port.h"
 #include "port_gl.h"
 #include "port_prof.h"
+#include "port_gpuprof.h"
 #ifdef PORT_VITA
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/threadmgr.h>
@@ -158,6 +159,9 @@ void port_platform_init(int argc, char **argv) {
             snprintf(seed, sizeof(seed), "app0:shaders/vgl%s", o && o[0] >= '0' && o[0] <= '4' ? o : "");
             vglSetShaderCacheSeedPath(seed);
         }
+#ifdef PORT_GPUPROF
+        port_gpuprof_init(); /* GPU profiler build: observe GXM from its initialization */
+#endif
         vglInitExtended(0, w, h, 8 * 1024 * 1024, SCE_GXM_MULTISAMPLE_NONE); /* MSAA off: fill rate */
         port_log("video: vitaGL init %.0f ms, shader cache %s", (port_prof_now() - t0) / 1000.0, path);
     }
@@ -209,6 +213,7 @@ static uint64_t g_msub_t0[MSUB_N];
 static unsigned g_msub_c[MSUB_N], g_msub_r[MSUB_N], g_msub_calls[MSUB_N];
 static int g_msub_on = -1;
 void port_msub_begin(int k, int rate) {
+    GP_MSUB(k, 1); /* GPU profiler build: pass labels */
     /* off by default (each sample is two timer syscalls on the Vita):
      * CWOC_MSUB=1 on PC, or build with -DPORT_MSUB_DEFAULT=1 */
     if (g_msub_on < 0) {
@@ -226,6 +231,7 @@ void port_msub_begin(int k, int rate) {
     g_msub_t0[k] = (++g_msub_c[k] % (unsigned)rate) == 0 ? port_prof_now() : 0;
 }
 void port_msub_end(int k) {
+    GP_MSUB(k, 0);
     if ((unsigned)k < MSUB_N && g_msub_t0[k]) g_msub[k] += (port_prof_now() - g_msub_t0[k]) * g_msub_r[k];
 }
 

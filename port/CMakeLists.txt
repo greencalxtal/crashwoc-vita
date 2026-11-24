@@ -64,6 +64,11 @@ list(FILTER SYS_PRELUDE_SOURCES INCLUDE REGEX "/(system|nucore|numath|nuraster|n
 set_source_files_properties(${SYS_PRELUDE_SOURCES} PROPERTIES COMPILE_DEFINITIONS PORT_SYS_PRELUDE=1)
 
 file(GLOB PORT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/*.c)
+# GPU profiler capture (port_gpuprof.c): only in a -DCWOC_GPUPROF=ON build
+option(CWOC_GPUPROF "Vita: build the psp2-cex-gpues4-prof capture in (measurement build)" OFF)
+if(NOT CWOC_GPUPROF)
+  list(REMOVE_ITEM PORT_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/port_gpuprof.c)
+endif()
 set_source_files_properties(${PORT_SOURCES} PROPERTIES COMPILE_DEFINITIONS PORT_PLATFORM_SOURCE=1)
 # Game-side reimplementations written for the port (missing asm functions).
 file(GLOB PORT_GAME_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/src/game/*.c)
@@ -209,6 +214,19 @@ if(PORT_VITA)
     SceAppUtil_stub SceSysmodule_stub SceCommonDialog_stub SceIme_stub SceAudio_stub
     SceAudioIn_stub SceTouch_stub SceHid_stub SceMotion_stub ScePower_stub SceProcessmgr_stub
     SceRtc_stub stdc++ pthread m c)
+  if(CWOC_GPUPROF)
+    # client libraries from psp2-cex-gpues4-prof (CMAKE_PREFIX_PATH: its install
+    # prefix). Only the GXM observer: its --wrap options put every sceGxm call of
+    # vitaGL through it, so it goes after vitaGL on the link line.
+    find_package(psp2_gpuprof CONFIG REQUIRED NO_CMAKE_FIND_ROOT_PATH)
+    find_library(GPUPROF_STUB NAMES psp2_gpuprof_stub REQUIRED NO_CMAKE_FIND_ROOT_PATH)
+    target_compile_definitions(cwoc_objs PRIVATE PORT_GPUPROF=1)
+    target_compile_definitions(crashwoc PRIVATE PORT_GPUPROF=1)
+    get_target_property(_gp_inc psp2_gpuprof::client INTERFACE_INCLUDE_DIRECTORIES)
+    target_include_directories(cwoc_objs PRIVATE ${_gp_inc})
+    target_link_libraries(crashwoc psp2_gpuprof::client psp2_gpuprof::gxm ${GPUPROF_STUB} ScePower_stub)
+    message(STATUS "GPU profiler capture: on (${GPUPROF_STUB})")
+  endif()
   set(VITA_APP_NAME "Crash WOC")
   set(VITA_TITLEID "CRWC00001")
   set(VITA_VERSION "00.10")

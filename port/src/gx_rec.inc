@@ -515,6 +515,13 @@ static void rec_init(void) {
         port_log("gx: watchdog thread failed (%s)", SDL_GetError());
     if (e && e[0] == '0') return;
     if (!g_rt_threaded) return;
+#ifdef PORT_GPUPROF
+    /* the pass labels of a capture are read where the commands are recorded */
+    if (getenv("CWOC_GPUPROF")) {
+        port_log("gx: GX thread off for the GPU profiler capture");
+        return;
+    }
+#endif
     g_rec = malloc(REC_BYTES);
     g_rec_go = SDL_CreateSemaphore(0);
     g_rec_done = SDL_CreateSemaphore(0);

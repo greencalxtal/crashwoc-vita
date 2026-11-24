@@ -19,6 +19,7 @@
 #include "port.h"
 #include "port_gl.h"
 #include "port_prof.h"
+#include "port_gpuprof.h"
 #include <SDL2/SDL.h>
 /* GX thread (gx_rec.c, included at the end): inside this file the public GX
  * entry points are the implementations, renamed gxi_<name> */
@@ -2130,6 +2131,9 @@ typedef struct {
         struct { void *dest; int w, h, rx, ry, rw, rh; } copy;
         struct { int frame; } present;
     } u;
+#ifdef PORT_GPUPROF
+    int gp; /* GPU profiler build: pass of the command (g_gpuprof_tag) */
+#endif
 } RCmd;
 
 #define RQ_CMDS 8192
@@ -2294,6 +2298,7 @@ static void batch_emit(void);
 
 static RCmd *rq_cmd(void) {
     if (g_ncmd >= RQ_CMDS) port_fatal("gx: render queue overflow");
+    GP_TAG_SET(&g_rf[g_pf].cmd[g_ncmd]);
     return &g_rf[g_pf].cmd[g_ncmd];
 }
 
@@ -2483,6 +2488,9 @@ static void batch_emit(void) {
         g_ioff += g_bni;
     }
     g_bn = g_bni = 0;
+#ifdef PORT_GPUPROF
+    g_gpuprof_fx = 0;
+#endif
     g_bverts = g_rf[g_pf].v + g_voff;
     g_bidx = g_rf[g_pf].ix + g_ioff;
     g_batch_epoch++;
@@ -3004,11 +3012,83 @@ static void rt_fps_overlay(void) {
     }
 }
 
+#ifdef PORT_GPUPROF
+/* GPU profiler build, render thread: pass scope and draw name of a command,
+ * and the draws.csv row of a game draw (port_gpuprof.c) */
+static int gp_cmd(const RFrame *fr, const RCmd *c) {
+    const BatchState *st;
+    PortGpDraw *d;
+    if (c->type == CMD_DRAW) port_gpuprof_shader((int)(c->u.draw.sh - g_shaders));
+    else if (c->type == CMD_DRAW_STATIC) port_gpuprof_shader((int)(c->u.sdraw.sh - g_shaders));
+    if ((c->type == CMD_DRAW || c->type == CMD_DRAW_STATIC) && port_gpuprof_skip(c->gp)) return 1;
+    if (!g_gpuprof_live) return 0;
+    port_gpuprof_scope(c->gp);
+    switch (c->type) {
+    case CMD_DRAW:
+    case CMD_DRAW_STATIC:
+        if (!(d = port_gpuprof_draw())) break;
+        if (c->type == CMD_DRAW) {
+            st = &fr->st[c->u.draw.st];
+            d->sh = (uint16_t)(c->u.draw.sh - g_shaders);
+            d->kind = GP_DRAW_DYN;
+            d->mode = (uint8_t)c->u.draw.mode;
+            d->nv = (uint32_t)c->u.draw.nv;
+            d->ni = (uint32_t)c->u.draw.ni;
+        } else {
+            st = &fr->st[c->u.sdraw.st];
+            d->sh = (uint16_t)(c->u.sdraw.sh - g_shaders);
+            d->kind = GP_DRAW_STATIC;
+            d->mode = GL_TRIANGLES;
+            d->ni = c->u.sdraw.n;
+        }
+        d->ntev = (uint8_t)st->num_tev;
+        if (st->num_tev > 0 && st->texvalid[0]) {
+            d->tw = st->tex[0].width;
+            d->th = st->tex[0].height;
+        }
+        d->blend = (uint8_t)st->blend_type;
+        d->bsrc = (uint8_t)st->blend_src;
+        d->bdst = (uint8_t)st->blend_dst;
+        d->zen = (uint8_t)st->z_enable;
+        d->zfn = (uint8_t)st->z_func;
+        d->zup = (uint8_t)st->z_update;
+        d->cull = (uint8_t)st->cull;
+        d->aupd = (uint8_t)st->alpha_update;
+        d->aref0 = (int16_t)st->aref0;
+        d->aref1 = (int16_t)st->aref1;
+        d->sx = (uint16_t)st->scissor[0];
+        d->sy = (uint16_t)st->scissor[1];
+        d->sw = (uint16_t)st->scissor[2];
+        d->sh_ = (uint16_t)st->scissor[3];
+        break;
+    case CMD_CLEAR: port_gpuprof_name("clear"); break;
+    case CMD_COPY: port_gpuprof_name("efb copy"); break;
+    case CMD_UPLOAD: port_gpuprof_name("texture upload"); break;
+    case CMD_COMPOSITE: port_gpuprof_name("3d composite"); break;
+    case CMD_PRESENT: port_gpuprof_name("present"); break;
+    }
+    return 0;
+}
+void port_gpuprof_dump_shaders(void *file) {
+    FILE *f = file;
+    int i, k;
+    for (i = 0; i < g_num_shaders; i++) {
+        fprintf(f, "=== s%03d key", i);
+        for (k = 0; k < 8; k++) fprintf(f, " %08x", (unsigned)g_shaders[i].key[k]);
+        fprintf(f, "\n--- vertex\n%s\n--- fragment\n%s\n", g_shaders[i].vsrc ? g_shaders[i].vsrc : "(none)",
+                g_shaders[i].fsrc ? g_shaders[i].fsrc : "(none)");
+    }
+}
+#endif
+
 static void exec_cmds(int f, int from, int to) {
     RFrame *fr = &g_rf[f];
     int i;
     for (i = from; i < to; i++) {
         const RCmd *c = &fr->cmd[i];
+#ifdef PORT_GPUPROF
+        if (gp_cmd(fr, c)) continue;
+#endif
         switch (c->type) {
         case CMD_DRAW: {
             uint64_t t0 = port_prof_now();
@@ -3102,6 +3182,9 @@ static void exec_cmds(int f, int from, int to) {
             g_ws_rt = "present";
             port_video_present(c->u.present.frame);
             g_ws_rt = "-";
+#ifdef PORT_GPUPROF
+            port_gpuprof_present(c->u.present.frame);
+#endif
             {
                 uint64_t t1 = port_prof_now();
                 g_prof[PROF_RT_SWAP] += t1 - t0;
@@ -3179,6 +3262,7 @@ void port_gx_present(int frame) {
     RCmd *c;
     port_gx_flush();
     c = &g_rf[g_pf].cmd[g_ncmd]; /* rq_cmd keeps this slot free */
+    GP_TAG_SET(c);
     c->type = CMD_PRESENT;
     c->u.present.frame = frame;
     g_ncmd++;
@@ -3537,6 +3621,9 @@ void port_gx_quads_end(int nq) {
     }
     g_bn += n;
     g_bni += nq * 6;
+#ifdef PORT_GPUPROF
+    g_gpuprof_fx = 1; /* the batch holds particle quads (pass label " fx") */
+#endif
     port_gx_stats_draw(n);
     if (!g_batch_on) port_gx_flush();
     g_q_last.bverts = g_bverts;
@@ -4529,6 +4616,7 @@ static int g_frame_composited;  /* game thread: the composite of this frame was 
 void port_gx_begin_frame(void) {
     RCmd *c;
     port_gx_flush();
+    GP_FRAME_BEGIN();
     g_frame++;
     if (g_trace > 0 && port_frame_count() >= g_trace_from) port_log("gx: frame %d", port_frame_count());
     g_frame_lowres = g_res3d_pct > 0 && g_hud_prev && (!g_res3d_dyn || g_res3d_low);
@@ -4545,6 +4633,7 @@ void port_gx_begin_frame(void) {
 /* game thread: the HUD scene starts (crashlib.c tbslotBegin, slot 31) */
 void port_gx_hud_begin(void) {
     RCmd *c;
+    GP_HUD();
     g_hud_prev = 1;
     if (!g_frame_lowres || g_frame_composited) return;
     if (g_rec_active) return; /* never inside a recorded pass (the composite then happens at present) */

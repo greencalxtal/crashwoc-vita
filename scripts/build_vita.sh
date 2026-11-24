@@ -24,7 +24,15 @@ else
   "$here/scripts/build_vitagl.sh"
   extra+=("-DPORT_VITAGL_DIR=$here/build-vitagl")
 fi
-cmake -S "$here/port" -B "$here/build-vita" -G Ninja -DPORT_VITA=ON \
+# CWOC_GPUPROF=1: measurement build with the GPU profiler capture
+# (port/src/port_gpuprof.c) in build-vita-gpuprof; GPUPROF_PREFIX: the install
+# prefix of the psp2-cex-gpues4-prof client libraries
+bdir="$here/build-vita"
+if [ -n "${CWOC_GPUPROF:-}" ]; then
+  bdir="$here/build-vita-gpuprof"
+  extra+=("-DCWOC_GPUPROF=ON" "-DCMAKE_PREFIX_PATH=${GPUPROF_PREFIX:-$HOME/vita-dev/gpuprof-prefix}")
+fi
+cmake -S "$here/port" -B "$bdir" -G Ninja -DPORT_VITA=ON \
   -DCWOC_DOL="$dol" -DCWOC_ASM_DIR="$here/decomp/build/GCBE7D/asm" "${extra[@]}"
-ninja -C "$here/build-vita"
-echo "VPK: $here/build-vita/crashwoc.vpk"
+ninja -C "$bdir"
+echo "VPK: $bdir/crashwoc.vpk"
