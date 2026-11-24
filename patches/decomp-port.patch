@@ -3895,7 +3895,7 @@ index 9685b8c..ad71754 100644
  }
  
 diff --git a/src/nu3dx/nurndr.c b/src/nu3dx/nurndr.c
-index b2137e9..ef78397 100644
+index b2137e9..688cdf1 100644
 --- a/src/nu3dx/nurndr.c
 +++ b/src/nu3dx/nurndr.c
 @@ -5,6 +5,7 @@
@@ -4008,7 +4008,7 @@ index b2137e9..ef78397 100644
    for (prim = item->geom->prim; prim != NULL; prim = prim->next) {
            switch (prim->type) {
                case NUPT_POINT:
-@@ -685,10 +733,52 @@ static void NuRndrGeomItem(struct nugeomitem_s *item) {
+@@ -685,10 +733,78 @@ static void NuRndrGeomItem(struct nugeomitem_s *item) {
                break;
            }
    }
@@ -4031,37 +4031,63 @@ index b2137e9..ef78397 100644
 + * the result is bit-identical (CWOC_CHECKBLEND=1 compares every item). */
 +static void port_blend_positions(struct nuvec_s *dst, const struct nuvtx_sk3tc1_s *src, int n,
 +                                 const struct NUBLENDGEOM_s *bg, const float *w) {
-+    int i, j;
-+    for (i = 0; i < n; i++) dst[i] = src[i].pnt;
++    /* the blends with a weight, in order: every one is applied to a block of
++     * 4 vertices in registers before the block is stored (one load and one
++     * store of the destination, whatever the number of blends) */
++    const struct nuvec_s *offs[64];
++    float bvs[64];
++    int i, j, k, nb = 0;
 +    for (j = 0; j < bg->nblends; j++) {
 +        const struct nuvec_s *off = bg->blend_offsets[j];
 +        float bv;
 +        if (off == NULL) continue;
 +        bv = w[bg->ix[j]];
 +        if (bv == 0.0f) continue;
-+        i = 0;
-+#ifdef __ARM_NEON
-+        for (; i + 4 <= n; i += 4) {
-+            float32x4x3_t d = vld3q_f32(&dst[i].x), o = vld3q_f32(&off[i].x);
-+            d.val[0] = vmlaq_n_f32(d.val[0], o.val[0], bv);
-+            d.val[1] = vmlaq_n_f32(d.val[1], o.val[1], bv);
-+            d.val[2] = vmlaq_n_f32(d.val[2], o.val[2], bv);
-+            vst3q_f32(&dst[i].x, d);
-+        }
-+#endif
-+        for (; i < n; i++) {
-+            dst[i].x = off[i].x * bv + dst[i].x;
-+            dst[i].y = off[i].y * bv + dst[i].y;
-+            dst[i].z = off[i].z * bv + dst[i].z;
-+        }
++        if (nb == 64) break; /* never seen; the rest go through the loop below */
++        offs[nb] = off;
++        bvs[nb++] = bv;
 +    }
++    for (i = 0; i < n; i++) dst[i] = src[i].pnt;
++    i = 0;
++#ifdef __ARM_NEON
++    for (; i + 4 <= n; i += 4) {
++        float32x4x3_t d = vld3q_f32(&dst[i].x);
++        for (k = 0; k < nb; k++) {
++            float32x4x3_t o = vld3q_f32(&offs[k][i].x);
++            d.val[0] = vmlaq_n_f32(d.val[0], o.val[0], bvs[k]);
++            d.val[1] = vmlaq_n_f32(d.val[1], o.val[1], bvs[k]);
++            d.val[2] = vmlaq_n_f32(d.val[2], o.val[2], bvs[k]);
++        }
++        vst3q_f32(&dst[i].x, d);
++    }
++#endif
++    for (; i < n; i++)
++        for (k = 0; k < nb; k++) {
++            dst[i].x = offs[k][i].x * bvs[k] + dst[i].x;
++            dst[i].y = offs[k][i].y * bvs[k] + dst[i].y;
++            dst[i].z = offs[k][i].z * bvs[k] + dst[i].z;
++        }
++    if (nb == 64) /* more than 64 weighted blends (never seen): finish them blend by blend,
++                   * from the one the first loop stopped at */
++        for (; j < bg->nblends; j++) {
++            const struct nuvec_s *off = bg->blend_offsets[j];
++            float bv;
++            if (off == NULL) continue;
++            bv = w[bg->ix[j]];
++            if (bv == 0.0f) continue;
++            for (i = 0; i < n; i++) {
++                dst[i].x = off[i].x * bv + dst[i].x;
++                dst[i].y = off[i].y * bv + dst[i].y;
++                dst[i].z = off[i].z * bv + dst[i].z;
++            }
++        }
 +}
 +#endif
 +
  //NGC MATCH
  static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
    float blendval;
-@@ -703,12 +793,74 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
+@@ -703,12 +819,74 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
  
    blendgeom = item->geom->blendgeom;
    DBTimerStart(4);
@@ -4136,7 +4162,7 @@ index b2137e9..ef78397 100644
      for (i = 0; i < item->geom->vtxcnt; i++) {
          destvb->x = srcverts->pnt.x;
          destvb->y = srcverts->pnt.y;
-@@ -727,9 +879,13 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
+@@ -727,9 +905,13 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
        destvb = destvb + 1;
        srcverts = srcverts + 1;
      }
@@ -4150,7 +4176,7 @@ index b2137e9..ef78397 100644
    SetupShaders(item);
    GS_LoadWorldMatrixIdentity();
    GS_SetVertexSource((float *)item->geom->hVB);
-@@ -743,6 +899,7 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
+@@ -743,6 +925,7 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
        NuErrorProlog("C:/source/crashwoc/code/nu3dx/nurndr.c",0x1087)("NuRndrGeomItem : Unknown primitive type!");
      }
    }
@@ -4158,7 +4184,7 @@ index b2137e9..ef78397 100644
    DBTimerEnd(4);
    return;
  }
-@@ -756,7 +913,10 @@ void NuRndrSkinItem2(struct nugeomitem_s *item) {
+@@ -756,7 +939,10 @@ void NuRndrSkinItem2(struct nugeomitem_s *item) {
          return;
      }
      DBTimerStart(5);
@@ -4169,7 +4195,7 @@ index b2137e9..ef78397 100644
      GS_LoadWorldMatrixIdentity();
      GS_SetVertexSource((float *)item->geom->hVB);
      for (prim = item->geom->prim; prim != NULL; prim = prim->next) {
-@@ -768,6 +928,7 @@ void NuRndrSkinItem2(struct nugeomitem_s *item) {
+@@ -768,6 +954,7 @@ void NuRndrSkinItem2(struct nugeomitem_s *item) {
              NuErrorProlog("C:/source/crashwoc/code/nu3dx/nurndr.c",0xf4e)("NuRndrGeomItem : Unknown primitive type!");
          }
      }
@@ -4177,7 +4203,7 @@ index b2137e9..ef78397 100644
      DBTimerEnd(5);
      return;
  }
-@@ -791,22 +952,30 @@ void NuRndrItem(struct nurndritem_s *item) {
+@@ -791,22 +978,30 @@ void NuRndrItem(struct nurndritem_s *item) {
          switch (item->type) {
                      case NURNDRITEM_GEOM2D:
                          DBTimerStart(0x1e);
