@@ -3895,7 +3895,7 @@ index 9685b8c..ad71754 100644
  }
  
 diff --git a/src/nu3dx/nurndr.c b/src/nu3dx/nurndr.c
-index b2137e9..1647150 100644
+index b2137e9..ef78397 100644
 --- a/src/nu3dx/nurndr.c
 +++ b/src/nu3dx/nurndr.c
 @@ -5,6 +5,7 @@
@@ -4061,7 +4061,7 @@ index b2137e9..1647150 100644
  //NGC MATCH
  static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
    float blendval;
-@@ -703,12 +793,72 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
+@@ -703,12 +793,74 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
  
    blendgeom = item->geom->blendgeom;
    DBTimerStart(4);
@@ -4094,7 +4094,9 @@ index b2137e9..1647150 100644
 +  {
 +    static int check = -1;
 +    if (check < 0) check = getenv("CWOC_CHECKBLEND") != NULL;
++    MSUB_B(14, 8);
 +    port_blend_positions(destvb, srcverts, item->geom->vtxcnt, blendgeom, *item->blendvals);
++    MSUB_E(14);
 +    if (!check) goto blend_done;
 +    /* check: keep the fast result aside and run the original loop below */
 +    {
@@ -4134,7 +4136,7 @@ index b2137e9..1647150 100644
      for (i = 0; i < item->geom->vtxcnt; i++) {
          destvb->x = srcverts->pnt.x;
          destvb->y = srcverts->pnt.y;
-@@ -727,6 +877,9 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
+@@ -727,9 +879,13 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
        destvb = destvb + 1;
        srcverts = srcverts + 1;
      }
@@ -4144,7 +4146,19 @@ index b2137e9..1647150 100644
    PPCMtmmcr1(0);
    PPCMtmmcr0(0);
    DBTimerEnd(0xd);
-@@ -756,7 +909,10 @@ void NuRndrSkinItem2(struct nugeomitem_s *item) {
++  MSUB_B(15, 8);
+   SetupShaders(item);
+   GS_LoadWorldMatrixIdentity();
+   GS_SetVertexSource((float *)item->geom->hVB);
+@@ -743,6 +899,7 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
+       NuErrorProlog("C:/source/crashwoc/code/nu3dx/nurndr.c",0x1087)("NuRndrGeomItem : Unknown primitive type!");
+     }
+   }
++  MSUB_E(15);
+   DBTimerEnd(4);
+   return;
+ }
+@@ -756,7 +913,10 @@ void NuRndrSkinItem2(struct nugeomitem_s *item) {
          return;
      }
      DBTimerStart(5);
@@ -4155,7 +4169,7 @@ index b2137e9..1647150 100644
      GS_LoadWorldMatrixIdentity();
      GS_SetVertexSource((float *)item->geom->hVB);
      for (prim = item->geom->prim; prim != NULL; prim = prim->next) {
-@@ -768,6 +924,7 @@ void NuRndrSkinItem2(struct nugeomitem_s *item) {
+@@ -768,6 +928,7 @@ void NuRndrSkinItem2(struct nugeomitem_s *item) {
              NuErrorProlog("C:/source/crashwoc/code/nu3dx/nurndr.c",0xf4e)("NuRndrGeomItem : Unknown primitive type!");
          }
      }
@@ -4163,7 +4177,7 @@ index b2137e9..1647150 100644
      DBTimerEnd(5);
      return;
  }
-@@ -791,22 +948,30 @@ void NuRndrItem(struct nurndritem_s *item) {
+@@ -791,22 +952,30 @@ void NuRndrItem(struct nurndritem_s *item) {
          switch (item->type) {
                      case NURNDRITEM_GEOM2D:
                          DBTimerStart(0x1e);
@@ -4907,7 +4921,7 @@ index 6b5acb0..c439e2a 100644
  u32 dbg_msg_cnt = 0;
  char* errfile;
 diff --git a/src/nucore/nufile.c b/src/nucore/nufile.c
-index 2fb83b4..b2fc28c 100644
+index 2fb83b4..393deda 100644
 --- a/src/nucore/nufile.c
 +++ b/src/nucore/nufile.c
 @@ -6,6 +6,19 @@
@@ -4930,7 +4944,22 @@ index 2fb83b4..b2fc28c 100644
  // Re-declare needed functions from numem.h
  void* NuMemAlloc(s32 size);
  void NuMemFree(void* data);
-@@ -269,6 +282,10 @@ s32 NuFileSeek(s32 handle, s32 offset, s32 origin)
+@@ -56,6 +69,14 @@ s32 NuFileExists(char* filename) {
+ 
+     strcpy(name, "/");
+ 	strcat(name, filename);
++#ifdef PORT
++	{
++		/* the port's file index answers without opening the file (an open
++		 * on the memory card costs ~ms; every NuFileSize / NuFileLoad asks) */
++		extern const char *port_fs_resolve(const char *name);
++		return port_fs_resolve(name) != NULL;
++	}
++#endif
+ 	filep = fopen(name, "r");
+ 	if (filep != NULL) {
+ 		fclose(filep);
+@@ -269,6 +290,10 @@ s32 NuFileSeek(s32 handle, s32 offset, s32 origin)
  			offset -= bytesleft;
  		}
  		bytesleft = 0;
@@ -4941,7 +4970,7 @@ index 2fb83b4..b2fc28c 100644
  		return fseek(fpointers[handle], (long)offset, forig[origin]);
  	}
  }
-@@ -425,6 +442,9 @@ void NuStopLoadScreen(s32 screen) {
+@@ -425,6 +450,9 @@ void NuStopLoadScreen(s32 screen) {
  float NuFileReadFloat(s32 handle) {
  	float data = 0.0f;
  	NuFileRead(handle, &data, 4);
@@ -4951,7 +4980,7 @@ index 2fb83b4..b2fc28c 100644
  	return data;
  }
  
-@@ -432,6 +452,9 @@ float NuFileReadFloat(s32 handle) {
+@@ -432,6 +460,9 @@ float NuFileReadFloat(s32 handle) {
  s32 NuFileReadInt(s32 handle) {
  	s32 data;
  	NuFileRead(handle, &data, 4);
@@ -4961,7 +4990,7 @@ index 2fb83b4..b2fc28c 100644
  	return data;
  }
  
-@@ -439,6 +462,9 @@ s32 NuFileReadInt(s32 handle) {
+@@ -439,6 +470,9 @@ s32 NuFileReadInt(s32 handle) {
  s16 NuFileReadShort(s32 handle) {
  	s16 data;
  	NuFileRead(handle, &data, 2);
@@ -4971,7 +5000,7 @@ index 2fb83b4..b2fc28c 100644
  	return data;
  }
  
-@@ -464,6 +490,9 @@ s32 NuFileBeginBlkRead(s32 handle, s32 blkType) {
+@@ -464,6 +498,9 @@ s32 NuFileBeginBlkRead(s32 handle, s32 blkType) {
          pos = NuFilePos(handle);
  		blkinfo[bh].pos = pos;
  		NuFileRead(handle, &blkinfo[bh], 8);

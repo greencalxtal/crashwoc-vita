@@ -196,7 +196,7 @@ void port_platform_init(int argc, char **argv) {
  * CWOC_MSUB=1: sampled (1 call in `rate`); CWOC_MSUB=2: every call (exact,
  * no sampling bias; each call costs two timer reads, ~1.4 us, counted in
  * the calls column). Slots 8+: item types and their parts. */
-#define MSUB_N 14
+#define MSUB_N 16
 uint64_t g_msub[MSUB_N];
 static uint64_t g_msub_t0[MSUB_N];
 static unsigned g_msub_c[MSUB_N], g_msub_r[MSUB_N], g_msub_calls[MSUB_N];
@@ -494,7 +494,8 @@ static void prof_report(int nf, uint64_t span) {
             }
             if (g_msub_on > 0) {
                 static const char *mn[MSUB_N] = {"m3d", "mstate", "wmtx", "shsetup", "draw", "ot", "other", "item",
-                                                 "geom", "skin", "2d/face", "skinsetup", "skindraw", "lights"};
+                                                 "geom", "skin", "2d/face", "skinsetup", "skindraw", "lights",
+                                                 "blendloop", "blendrest"};
                 n += snprintf(buf + n, sizeof(buf) - n, " | mtl:");
                 for (i = 0; i < MSUB_N; i++) {
                     n += snprintf(buf + n, sizeof(buf) - n, " %s %.2f(%u)", mn[i], g_msub[i] / 1000.0 / nf,
@@ -626,16 +627,20 @@ void DEMOSwapBuffers(void) {
         static Uint32 last_swap;
         extern uint64_t port_io_us, port_io_bytes;
         extern int port_io_files;
+        extern uint64_t port_io_open_us;
+        static uint64_t io_o0;
         static uint64_t io_us0, io_b0;
         static int io_f0;
         static int thresh = -1;
         if (thresh < 0) thresh = getenv("CWOC_LONGFRAME") ? atoi(getenv("CWOC_LONGFRAME")) : 100;
         if (last_swap && now - last_swap > (Uint32)thresh)
-            port_log("long frame %d: %u ms (file reads %.0f ms, %.1f MB, %d opens)", g_frames, now - last_swap,
-                     (port_io_us - io_us0) / 1000.0, (port_io_bytes - io_b0) / 1048576.0, port_io_files - io_f0);
+            port_log("long frame %d: %u ms (file reads %.0f ms, %.1f MB, %d opens %.0f ms)", g_frames, now - last_swap,
+                     (port_io_us - io_us0) / 1000.0, (port_io_bytes - io_b0) / 1048576.0, port_io_files - io_f0,
+                     (port_io_open_us - io_o0) / 1000.0);
         io_us0 = port_io_us;
         io_b0 = port_io_bytes;
         io_f0 = port_io_files;
+        io_o0 = port_io_open_us;
         last_swap = now;
     }
     if (now - g_last_report >= 5000) {

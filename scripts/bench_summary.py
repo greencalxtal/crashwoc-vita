@@ -21,7 +21,7 @@ import statistics as st
 import sys
 
 FRAME_RE = re.compile(r"^frame (\d+): ([\d.]+) fps, (\d+) GX blocks/frame, (\d+) GL draws/frame, (\d+) verts/frame")
-LONG_RE = re.compile(r"^long frame (\d+): (\d+) ms \(file reads (\d+) ms, ([\d.]+) MB, (\d+) opens\)")
+LONG_RE = re.compile(r"^long frame (\d+): (\d+) ms \(file reads (\d+) ms, ([\d.]+) MB, (\d+) opens(?: (\d+) ms)?\)")
 PROF_HEAD_RE = re.compile(r"total ([\d.]+) game ([\d.]+)")
 PROF_ITEM_RE = re.compile(r"(\w+) ([\d.]+)\((\d+)\)")
 RT_BUSY_RE = re.compile(r"render (?:thread|inline) busy ([\d.]+):")

@@ -111,7 +111,8 @@ const char *port_fs_resolve(const char *name) {
 }
 
 uint64_t port_io_us, port_io_bytes; /* file read statistics (long-frame log) */
-int port_io_files;
+uint64_t port_io_open_us;           /* time in opens (resolve, open, size) */
+int port_io_files;                  /* files opened */
 uint64_t port_prof_now(void);
 
 /* fread with timing, used by NuFileRead */
@@ -145,15 +146,28 @@ FILE *port_fopen(const char *name, const char *mode) {
         port_log("fs: missing '%s'", name);
         return NULL;
     }
-    f = fopen(p, mode ? mode : "rb");
-    port_log("fs: open '%s' -> '%s'%s", name, p, f ? "" : " FAILED");
-    if (f) {
-        /* fopen_NGC (system/gc/fs.c) left the size in filelength; NuFParOpen
-         * reads it, so text scripts (texture animations .ats) parsed as empty */
-        extern unsigned int filelength;
-        fseek(f, 0, SEEK_END);
-        filelength = (unsigned int)ftell(f);
-        fseek(f, 0, SEEK_SET);
+    {
+        /* CWOC_FSLOG=1: log every open (each log line is a write + flush on
+         * the memory card: ~600 a level load); CWOC_FSBUF=<KB>: stdio read
+         * buffer (default 128; newlib's 1 KB turned each 64 KB NuFileRead
+         * chunk into ~64 sceIoRead calls); 0 = newlib's default */
+        static int fslog = -1, fsbuf = -1;
+        uint64_t t0 = port_prof_now();
+        if (fslog < 0) fslog = getenv("CWOC_FSLOG") && getenv("CWOC_FSLOG")[0] == '1';
+        if (fsbuf < 0) fsbuf = getenv("CWOC_FSBUF") ? atoi(getenv("CWOC_FSBUF")) : 128;
+        f = fopen(p, mode ? mode : "rb");
+        if (fslog || !f) port_log("fs: open '%s' -> '%s'%s", name, p, f ? "" : " FAILED");
+        if (f) {
+            /* fopen_NGC (system/gc/fs.c) left the size in filelength; NuFParOpen
+             * reads it, so text scripts (texture animations .ats) parsed as empty */
+            extern unsigned int filelength;
+            if (fsbuf > 0) setvbuf(f, NULL, _IOFBF, (size_t)fsbuf * 1024);
+            fseek(f, 0, SEEK_END);
+            filelength = (unsigned int)ftell(f);
+            fseek(f, 0, SEEK_SET);
+        }
+        port_io_files++;
+        port_io_open_us += port_prof_now() - t0;
     }
     return f;
 }
