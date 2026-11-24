@@ -4279,7 +4279,7 @@ index 2db1eb2..28a5c02 100644
  static struct numtx_s rndrmtx[1536];
  
 diff --git a/src/nu3dx/nuscene.c b/src/nu3dx/nuscene.c
-index ef903b7..ee4e72f 100644
+index ef903b7..7f66d05 100644
 --- a/src/nu3dx/nuscene.c
 +++ b/src/nu3dx/nuscene.c
 @@ -7,6 +7,9 @@
@@ -4461,7 +4461,7 @@ index ef903b7..ee4e72f 100644
  
      for (i = 0; i < gsc->numtexanims; i++){
          tex = &gsc->texanims[i]; //tex = gsc->texanims + (cnt << 5);
-@@ -709,7 +781,9 @@ struct nuscene_s * NuSceneLoad(char *filename) {
+@@ -709,20 +781,35 @@ struct nuscene_s * NuSceneLoad(char *filename) {
    strcpy(file2,filename);
    fh = NuFileOpen(file2,NUFILE_READ);
    if (fh != 0) {
@@ -4471,7 +4471,33 @@ index ef903b7..ee4e72f 100644
              scene = (struct nuscene_s *)NuMemAlloc(0x3c);
              memset(scene,0,0x3c);
              blk = blkcnt;
-@@ -742,7 +816,9 @@ struct nuscene_s * NuSceneLoad(char *filename) {
+             if (NuFileBeginBlkRead(fh,0) == 0x30435347) { //"0CSG"
+               scene->gscene = (struct nugscn_s *)NuMemAlloc(0x74);
+               memset(scene->gscene,0,0x74);
++#ifdef PORT
++              { /* where a scene load's CPU goes (log line per scene) */
++                extern unsigned long long port_prof_now(void);
++                extern void port_log(const char *fmt, ...);
++                unsigned long long t0 = port_prof_now();
++                ReadNuIFFGScene(fh,scene->gscene);
++                NuSceneAverageTextureSpaceVerts(scene);
++                port_log("scene: %s read in %.0f ms", filename, (port_prof_now() - t0) / 1000.0);
++              }
++              if (0)
++#endif
+               ReadNuIFFGScene(fh,scene->gscene);
+                 for (i = 0; i < scene->gscene->numinstance; i++) {
+                       for (geom1 = scene->gscene->gobjs[scene->gscene->instances[i].objid]->geom;
+                           geom1 != NULL; geom1 = geom1->next) {
+                       }
+                 }
++#ifndef PORT
+               NuSceneAverageTextureSpaceVerts(scene);
++#endif
+                 for (i = 0; i < scene->gscene->numgobj; i++) {
+                       for (gobj1 = scene->gscene->gobjs[i]; gobj1 != NULL; gobj1 = gobj1->next_gobj) {
+                             for (geom1 = *(&gobj1->geom); geom1 != NULL; geom1 = geom1->next) {
+@@ -742,7 +829,9 @@ struct nuscene_s * NuSceneLoad(char *filename) {
              }
    }
    else {
@@ -5435,7 +5461,7 @@ index b083bf8..a8e0e98 100644
      if (Level == 3) goto fade_50;
      goto check_vehicle;
 diff --git a/src/nuxbox/dummyfunc.c b/src/nuxbox/dummyfunc.c
-index 18d4ff2..fa2c8be 100644
+index 18d4ff2..7e6d305 100644
 --- a/src/nuxbox/dummyfunc.c
 +++ b/src/nuxbox/dummyfunc.c
 @@ -4,6 +4,13 @@
@@ -5729,6 +5755,25 @@ index 18d4ff2..fa2c8be 100644
      NuWaterClose();
      NuGlassClose();
      XboxEffectSystemInitialised = 0;
+@@ -1499,6 +1714,18 @@ void NuSceneAverageTextureSpaceVerts(struct nuscene_s *scene) {
+ 
+     gsc = scene->gscene;
+     numinst = gsc->numinstance;
++#ifdef PORT
++    /* PORT: every pair of instances (numinst^2 transforms and distances: 3.1 s
++     * of the jungle_r load on the Vita) only to call
++     * NuGobjAverageTextureSpaceVerts, which walks lists and does nothing (in
++     * the DOL too). What stays observable is the last pair's index in the
++     * globals, which nothing reads: set them the same way and skip the rest. */
++    if (numinst > 0) {
++        globalix1 = numinst - 1;
++        globalix2 = numinst - 1;
++    }
++    return;
++#endif
+         for(ix1 = 0; ix1 < numinst; ix1++) {
+                 for(ix2 = 0; ix2 < numinst; ix2++) {
+                     globalix1 = ix1;
 diff --git a/src/system/crashlib.c b/src/system/crashlib.c
 index a44697f..dd87387 100644
 --- a/src/system/crashlib.c
