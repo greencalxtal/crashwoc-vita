@@ -15,13 +15,15 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")/.." && pwd)"
 : "${VITASDK:?set VITASDK to your VitaSDK install}"
 export PATH="$VITASDK/bin:$PATH"
-commit=2bdbe895ddc6a7e410a9ea55a8f53d8173c61ad8
+# VITAGL_COMMIT / VITAGL_PATCH: another vitaGL commit and its patch (A/B
+# against a newer upstream; patches/vitagl-head.patch fits 788c61d)
+commit="${VITAGL_COMMIT:-2bdbe895ddc6a7e410a9ea55a8f53d8173c61ad8}"
 repo="${VITAGL_GIT:-https://github.com/Rinnegatamante/vitaGL.git}"
 flags="${VITAGL_FLAGS:-NO_DEBUG=1 HAVE_SHADER_CACHE=1}"
 out="$here/build-vitagl"
 src="$out/src"
 stamp="$out/lib/.built"
-patch="$here/patches/vitagl.patch"
+patch="${VITAGL_PATCH:-$here/patches/vitagl.patch}"
 want="$commit $flags $(sha256sum "$patch" | cut -c1-12)"
 if [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$want" ]; then
   echo "vitaGL up to date ($want)"
@@ -29,7 +31,7 @@ if [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$want" ]; then
 fi
 mkdir -p "$out/lib" "$out/include"
 [ -d "$src/.git" ] || git clone -q "$repo" "$src"
-git -C "$src" cat-file -e "$commit^{commit}" 2>/dev/null || git -C "$src" fetch -q origin
+git -C "$src" cat-file -e "$commit^{commit}" 2>/dev/null || git -C "$src" fetch -q "$repo" "+refs/*:refs/fetched/*"
 git -C "$src" checkout -q -f --detach "$commit"
 git -C "$src" apply "$patch"
 make -C "$src" clean >/dev/null
