@@ -144,6 +144,13 @@ void port_platform_init(int argc, char **argv) {
         mkdir(d, 0777);
         snprintf(path, sizeof(path), "%s/vgl%s", d, o && o[0] >= '0' && o[0] <= '4' ? o : "");
         vglSetShaderCachePath(path);
+        if (getenv("CWOC_PBSIZE")) { /* measurement: sceGxm parameter buffer in MB (default 16) */
+            int mb = atoi(getenv("CWOC_PBSIZE"));
+            if (mb >= 4 && mb <= 128) {
+                vglSetParamBufferSize((uint32_t)mb * 1024 * 1024);
+                port_log("video: parameter buffer %d MB", mb);
+            }
+        }
         /* shaders shipped in the VPK (CMake CWOC_SHADER_SEED): read when the
          * cache on the card does not have them; CWOC_SHSEED=0 ignores them */
         if (!(getenv("CWOC_SHSEED") && getenv("CWOC_SHSEED")[0] == '0')) {
