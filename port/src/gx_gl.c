@@ -1063,9 +1063,10 @@ static volatile int g_res3d_low;   /* render thread -> game thread: draw the 3D 
  * - native: 2 GPU-bound windows in a row -> small; T is kept as the native
  *   GPU cost (gnat)
  * - small: still GPU bound -> stay. Else back to native (a probe) after 2
- *   windows in a row with T at the 60 cap (within 2 %: snow_m small runs at
- *   57.8 fps, not capped) or with the CPU alone clearly slower than the native
- *   GPU was (T >= 1.05 gnat), or after a hold (8 s). A probe that is GPU
+ *   windows in a row with the CPU alone clearly slower than the native GPU
+ *   was (T >= 1.05 gnat), or after a hold (8 s). Not when small reaches the
+ *   60 cap: that says nothing of native (widescreen play: small at 60, native
+ *   GPU bound at ~48, 28 such round trips in a session). A probe that is GPU
  *   bound within 2 windows goes back small and doubles the hold (up to
  *   64 s); one that lasts 4 s resets it. */
 static void rt_res3d_ctrl(uint64_t t_swap0, uint64_t now) {
@@ -1110,7 +1111,7 @@ static void rt_res3d_ctrl(uint64_t t_swap0, uint64_t now) {
         return;
     }
     if (gpu) { exits = 0; return; }
-    if (T <= target * 1.02 || T >= gnat * 1.05) exits++;
+    if (T >= gnat * 1.05) exits++;
     else exits = 0;
     if (exits >= 2 || now >= probe_at) {
         exits = 0;
