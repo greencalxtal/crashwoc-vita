@@ -4921,7 +4921,7 @@ index 6b5acb0..c439e2a 100644
  u32 dbg_msg_cnt = 0;
  char* errfile;
 diff --git a/src/nucore/nufile.c b/src/nucore/nufile.c
-index 2fb83b4..393deda 100644
+index 2fb83b4..fdfedc1 100644
 --- a/src/nucore/nufile.c
 +++ b/src/nucore/nufile.c
 @@ -6,6 +6,19 @@
@@ -4970,7 +4970,26 @@ index 2fb83b4..393deda 100644
  		return fseek(fpointers[handle], (long)offset, forig[origin]);
  	}
  }
-@@ -425,6 +450,9 @@ void NuStopLoadScreen(s32 screen) {
+@@ -279,6 +304,18 @@ s32 NuFileSize(char* fileName) {
+ 	s32 rv = -1;
+ 	s32 handle;
+ 
++#ifdef PORT
++	/* the port's file index has the size: no open + seek + close (each open
++	 * on the memory card costs ~2.7 ms, and NuFileLoad opens again to read) */
++	if (fileName != NULL && *fileName != 0) {
++		extern long port_fs_size(const char *name);
++		char name[128];
++		strcpy(name, "/");
++		strcat(name, fileName);
++		return (s32)port_fs_size(name);
++	}
++	return rv;
++#endif
+ 	if (fileName != NULL && *fileName != 0) {
+ 	    if (NuFileExists(fileName) != 0) {
+             handle = NuFileOpen(fileName, NUFILE_READ);
+@@ -425,6 +462,9 @@ void NuStopLoadScreen(s32 screen) {
  float NuFileReadFloat(s32 handle) {
  	float data = 0.0f;
  	NuFileRead(handle, &data, 4);
@@ -4980,7 +4999,7 @@ index 2fb83b4..393deda 100644
  	return data;
  }
  
-@@ -432,6 +460,9 @@ float NuFileReadFloat(s32 handle) {
+@@ -432,6 +472,9 @@ float NuFileReadFloat(s32 handle) {
  s32 NuFileReadInt(s32 handle) {
  	s32 data;
  	NuFileRead(handle, &data, 4);
@@ -4990,7 +5009,7 @@ index 2fb83b4..393deda 100644
  	return data;
  }
  
-@@ -439,6 +470,9 @@ s32 NuFileReadInt(s32 handle) {
+@@ -439,6 +482,9 @@ s32 NuFileReadInt(s32 handle) {
  s16 NuFileReadShort(s32 handle) {
  	s16 data;
  	NuFileRead(handle, &data, 2);
@@ -5000,7 +5019,7 @@ index 2fb83b4..393deda 100644
  	return data;
  }
  
-@@ -464,6 +498,9 @@ s32 NuFileBeginBlkRead(s32 handle, s32 blkType) {
+@@ -464,6 +510,9 @@ s32 NuFileBeginBlkRead(s32 handle, s32 blkType) {
          pos = NuFilePos(handle);
  		blkinfo[bh].pos = pos;
  		NuFileRead(handle, &blkinfo[bh], 8);
