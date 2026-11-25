@@ -341,12 +341,29 @@ static void maybe_screenshot(int frame) {
     if (!dir || ((frame % every) != 0 && g_shot_burst <= 0)) return;
     if (g_shot_burst > 0) g_shot_burst--;
 #ifdef PORT_VITA
-    return;
+    /* the back buffer before the swap (a GPU sync: only on the requested
+     * frames, for comparing a given game frame between builds or options) */
+    mkdir(dir, 0777);
+    w = g_win_w;
+    h = g_win_h;
 #else
     SDL_GL_GetDrawableSize(g_window, &w, &h);
+#endif
+    {
     px = malloc((size_t)w * h * 3);
     glPixelStorei(GL_PACK_ALIGNMENT, 1);
     glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, px);
+#ifdef PORT_VITA
+    {
+        /* vitaGL hands back the colour buffer's BGR order */
+        size_t i;
+        for (i = 0; i < (size_t)w * h * 3; i += 3) {
+            unsigned char t = px[i];
+            px[i] = px[i + 2];
+            px[i + 2] = t;
+        }
+    }
+#endif
     snprintf(path, sizeof(path), "%s/frame_%05d.ppm", dir, frame);
     f = fopen(path, "wb");
     if (f) {
@@ -355,7 +372,7 @@ static void maybe_screenshot(int frame) {
         fclose(f);
     }
     free(px);
-#endif
+    }
 }
 
 /* debugging: CWOC_WARP=level@frame requests a level change (new_level) */
