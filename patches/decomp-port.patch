@@ -3775,7 +3775,7 @@ index 61054f6..f1dd8ec 100644
      memset(&light[id],0,100);
      NuMtxSetIdentity((struct Mtx *)&light[id].light.mtx);
 diff --git a/src/nu3dx/numtl.c b/src/nu3dx/numtl.c
-index 9685b8c..1297808 100644
+index 9685b8c..b80e635 100644
 --- a/src/nu3dx/numtl.c
 +++ b/src/nu3dx/numtl.c
 @@ -200,6 +200,9 @@ struct numtl_s * NuMtlRead(s32 fh) {
@@ -3788,7 +3788,7 @@ index 9685b8c..1297808 100644
    return mtl;
  }
  
-@@ -457,11 +460,27 @@ LAB_800b3394:
+@@ -457,11 +460,36 @@ LAB_800b3394:
    return;
  }
  
@@ -3806,6 +3806,15 @@ index 9685b8c..1297808 100644
 +#ifdef PORT
 +  extern void port_gx_rec_all(int on);
 +  port_gx_rec_all(1); /* the whole pass recorded for the GX thread */
++  {
++    extern unsigned port_otskip_hit, port_otskip_n;
++    static unsigned calls;
++    if (++calls % 1000 == 0) {
++      extern void port_log(const char *fmt, ...);
++      port_log("mtl: sorted items %u (material kept %u)", port_otskip_n, port_otskip_hit);
++      port_otskip_hit = port_otskip_n = 0;
++    }
++  }
 +#endif
    DBTimerStart(0x13);
 +  MSUB_B(0, 1);
@@ -3816,7 +3825,7 @@ index 9685b8c..1297808 100644
    DBTimerStart(0x12);
    DBTimerEnd(0x12);
    DBTimerStart(0x11);
-@@ -469,9 +488,13 @@ void NuMtlRender(void) {
+@@ -469,9 +497,13 @@ void NuMtlRender(void) {
    DBTimerStart(0x10);
    NuMtlRenderDynamic2d3d();
    DBTimerEnd(0x10);
@@ -3830,7 +3839,7 @@ index 9685b8c..1297808 100644
    DBTimerStart(0xe);
    NuMtlRenderFaceOn();
    DBTimerEnd(0xe);
-@@ -484,15 +507,23 @@ void NuMtlRender(void) {
+@@ -484,15 +516,23 @@ void NuMtlRender(void) {
    DBTimerStart(10);
    NuMtlRenderWater();
    DBTimerEnd(10);
@@ -3854,7 +3863,7 @@ index 9685b8c..1297808 100644
    return;
  }
  
-@@ -501,19 +532,52 @@ static void NuMtlRender3d(void) {
+@@ -501,19 +541,52 @@ static void NuMtlRender3d(void) {
    struct nusysmtl_s *sm;
    struct nurndritem_s *ri;
  
@@ -3907,13 +3916,21 @@ index 9685b8c..1297808 100644
    return;
  }
  
-@@ -560,6 +624,14 @@ static void NuMtlRenderDynamic2d3d(void) {
+@@ -557,13 +630,42 @@ static void NuMtlRenderDynamic2d3d(void) {
+ }
+ 
+ //NGC MATCH
++#ifdef PORT
++unsigned port_otskip_hit, port_otskip_n;
++#endif
  static void NuMtlRenderOT(s32 begin,s32 end) {
    struct nuotitem_s *oti;
    s32 i;
 +#ifdef PORT
++  static int otskip = -1;
++  struct nusysmtl_s *ot_prev = NULL;
 +  extern int port_ablate(void);
-+
++  if (otskip < 0) otskip = !(getenv("CWOC_OTSKIP") && getenv("CWOC_OTSKIP")[0] == '0');
 +  if (port_ablate() == 7) { /* measurement only: the sorted passes left out */
 +    for (i = begin; i <= end; i++) ot[i] = NULL;
 +    return;
@@ -3922,6 +3939,26 @@ index 9685b8c..1297808 100644
  
    GS_SetAlphaCompare(7,0);
      for (i = begin; i <= end; i++) {
+       for (oti = ot[i]; oti != NULL; oti = oti->next) {
++#ifdef PORT
++        /* PORT: consecutive sorted items of the same material set it up once,
++         * as the static pass does for a whole material list (the per-item z
++         * and alpha compare of the L branch are still set). CWOC_OTSKIP=0: off */
++        port_otskip_n++;
++        if (otskip && oti->mtl == ot_prev) {
++          port_otskip_hit++;
++          if ((oti->mtl->mtl).L != '\0') {
++            GS_SetZCompare(1,1,GX_LEQUAL);
++            GS_SetAlphaCompare(3,0xf7);
++          }
++          NuRndrItem(oti->hdr);
++          continue;
++        }
++        ot_prev = oti->mtl;
++#endif
+         if ((oti->mtl->mtl).L == '\0') {
+           NuTexSetTexture(0,(oti->mtl->mtl).tid);
+           NuMtlSetRenderStates(&oti->mtl->mtl);
 diff --git a/src/nu3dx/nurndr.c b/src/nu3dx/nurndr.c
 index b2137e9..1ef2ffe 100644
 --- a/src/nu3dx/nurndr.c
