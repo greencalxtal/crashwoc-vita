@@ -3895,7 +3895,7 @@ index 9685b8c..ad71754 100644
  }
  
 diff --git a/src/nu3dx/nurndr.c b/src/nu3dx/nurndr.c
-index b2137e9..688cdf1 100644
+index b2137e9..609086f 100644
 --- a/src/nu3dx/nurndr.c
 +++ b/src/nu3dx/nurndr.c
 @@ -5,6 +5,7 @@
@@ -3976,7 +3976,7 @@ index b2137e9..688cdf1 100644
          vtx--;
      }
      
-@@ -650,17 +684,31 @@ void NuRndrFaceItem(struct nugeomitem_s* item) {
+@@ -650,17 +684,48 @@ void NuRndrFaceItem(struct nugeomitem_s* item) {
  }
  
  //MATCH GCN
@@ -3991,9 +3991,20 @@ index b2137e9..688cdf1 100644
 +#endif
  static void NuRndrGeomItem(struct nugeomitem_s *item) {
    struct nuprim_s *prim;
++#ifdef PORT
++  /* CWOC_ABLATE=N, measurement only (the picture breaks): leave out a part of
++   * the per-item work to see its real cost without timers. 1 matrix, 2
++   * SetupShaders, 3 the primitives, 4 the whole item. */
++  static int ablate = -1;
++  if (ablate < 0) ablate = getenv("CWOC_ABLATE") ? atoi(getenv("CWOC_ABLATE")) : 0;
++  if (ablate == 4) return;
++#endif
  
    DBTimerStart(6);
 +  MSUB_B(2, 8);
++#ifdef PORT
++  if (ablate != 1)
++#endif
    if ((struct _GSMATRIX *)item->mtx != NULL) {
      GS_SetWorldMatrix((struct _GSMATRIX *)item->mtx);
    }
@@ -4002,13 +4013,19 @@ index b2137e9..688cdf1 100644
    }
 +  MSUB_E(2);
 +  MSUB_B(3, 8);
++#ifdef PORT
++  if (ablate != 2)
++#endif
    SetupShaders(item);
 +  MSUB_E(3);
 +  MSUB_B(4, 8);
++#ifdef PORT
++  if (ablate == 3) return;
++#endif
    for (prim = item->geom->prim; prim != NULL; prim = prim->next) {
            switch (prim->type) {
                case NUPT_POINT:
-@@ -685,10 +733,78 @@ static void NuRndrGeomItem(struct nugeomitem_s *item) {
+@@ -685,10 +750,78 @@ static void NuRndrGeomItem(struct nugeomitem_s *item) {
                break;
            }
    }
@@ -4087,7 +4104,7 @@ index b2137e9..688cdf1 100644
  //NGC MATCH
  static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
    float blendval;
-@@ -703,12 +819,74 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
+@@ -703,12 +836,74 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
  
    blendgeom = item->geom->blendgeom;
    DBTimerStart(4);
@@ -4162,7 +4179,7 @@ index b2137e9..688cdf1 100644
      for (i = 0; i < item->geom->vtxcnt; i++) {
          destvb->x = srcverts->pnt.x;
          destvb->y = srcverts->pnt.y;
-@@ -727,9 +905,13 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
+@@ -727,9 +922,13 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
        destvb = destvb + 1;
        srcverts = srcverts + 1;
      }
@@ -4176,7 +4193,7 @@ index b2137e9..688cdf1 100644
    SetupShaders(item);
    GS_LoadWorldMatrixIdentity();
    GS_SetVertexSource((float *)item->geom->hVB);
-@@ -743,6 +925,7 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
+@@ -743,6 +942,7 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
        NuErrorProlog("C:/source/crashwoc/code/nu3dx/nurndr.c",0x1087)("NuRndrGeomItem : Unknown primitive type!");
      }
    }
@@ -4184,7 +4201,7 @@ index b2137e9..688cdf1 100644
    DBTimerEnd(4);
    return;
  }
-@@ -756,7 +939,10 @@ void NuRndrSkinItem2(struct nugeomitem_s *item) {
+@@ -756,7 +956,10 @@ void NuRndrSkinItem2(struct nugeomitem_s *item) {
          return;
      }
      DBTimerStart(5);
@@ -4195,7 +4212,7 @@ index b2137e9..688cdf1 100644
      GS_LoadWorldMatrixIdentity();
      GS_SetVertexSource((float *)item->geom->hVB);
      for (prim = item->geom->prim; prim != NULL; prim = prim->next) {
-@@ -768,6 +954,7 @@ void NuRndrSkinItem2(struct nugeomitem_s *item) {
+@@ -768,6 +971,7 @@ void NuRndrSkinItem2(struct nugeomitem_s *item) {
              NuErrorProlog("C:/source/crashwoc/code/nu3dx/nurndr.c",0xf4e)("NuRndrGeomItem : Unknown primitive type!");
          }
      }
@@ -4203,7 +4220,7 @@ index b2137e9..688cdf1 100644
      DBTimerEnd(5);
      return;
  }
-@@ -791,22 +978,30 @@ void NuRndrItem(struct nurndritem_s *item) {
+@@ -791,22 +995,30 @@ void NuRndrItem(struct nurndritem_s *item) {
          switch (item->type) {
                      case NURNDRITEM_GEOM2D:
                          DBTimerStart(0x1e);
