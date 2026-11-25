@@ -2746,12 +2746,23 @@ static void rt_out_begin(RFrame *fr) {
     g_rt_cov = 0;
 }
 
+/* skinning prefetch distance in vertices (CWOC_SKINPF=0: none, A/B). The
+ * source vertices of a cached skin list are gathered through its slot table
+ * from the game's mesh: without a prefetch each one was a miss to memory
+ * (~1 us a vertex in hub, 5 ms a frame on the render thread). */
+#define SKIN_PF 8
+static int g_skinpf = -1;
 static void rt_skin(const RFrame *fr, const XfSeg *sg) {
     const float *mt = fr->skm + 256 * sg->skm;
     const float one = sg->one;
     GLVertex *d = fr->v + sg->vfirst, *e = d + sg->count;
     const SkinW *w = fr->skw + sg->vfirst;
+    if (g_skinpf < 0) g_skinpf = !(getenv("CWOC_SKINPF") && getenv("CWOC_SKINPF")[0] == '0');
     for (; d < e; d++, w++) {
+        if (g_skinpf && d + SKIN_PF < e) {
+            __builtin_prefetch(d + SKIN_PF, 1, 0);
+            __builtin_prefetch(w + SKIN_PF, 0, 0);
+        }
         const float v0 = d->pos[0], v1 = d->pos[1], v2 = d->pos[2];
         const float *m = mt + 16 * w->i0;
         float a0 = m[0] * v0 + m[1] * v1 + m[2] * v2 + m[3];
@@ -2787,7 +2798,16 @@ static void rt_skin_src(const RFrame *fr, const XfSeg *sg) {
     GLVertex *d = fr->v + sg->vfirst, *e = d + sg->count;
     const SkinW *w = fr->skw + sg->vfirst;
     const u16 *uq = sg->uniq;
+    if (g_skinpf < 0) g_skinpf = !(getenv("CWOC_SKINPF") && getenv("CWOC_SKINPF")[0] == '0');
     for (; d < e; d++, w++) {
+        if (g_skinpf && d + SKIN_PF < e) {
+            /* the source vertex SKIN_PF slots ahead (52 bytes: two lines) */
+            const char *ps = (const char *)&sv[(short)(uq ? uq[SKIN_PF] : w[SKIN_PF].sk)];
+            __builtin_prefetch(ps, 0, 0);
+            __builtin_prefetch(ps + 48, 0, 0);
+            __builtin_prefetch(d + SKIN_PF, 1, 0);
+            if (!uq) __builtin_prefetch(w + 2 * SKIN_PF, 0, 0);
+        }
         const PortGSVertexSkinR *s = &sv[(short)(uq ? *uq++ : w->sk)];
         const float v0 = s->x, v1 = s->y, v2 = s->z;
         const float *m = mt + 16 * ((int)s->ix[0] & 15);
