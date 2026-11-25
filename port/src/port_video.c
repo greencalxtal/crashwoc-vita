@@ -580,6 +580,27 @@ static void prof_report(int nf, uint64_t span) {
             g_wk_us = 0;
             g_wk_jobs = 0;
         }
+        {
+            extern int g_xfsub_on;
+            extern uint64_t g_xfsub_us[2][4];
+            extern unsigned g_xfsub_v[2][4], g_xfsub_n[2][4];
+            static const char *kn[4] = {"skin-cached", "copy", "skin", "view"};
+            if (g_xfsub_on > 0) {
+                char b[512];
+                int w, k, n = 0;
+                for (w = 0; w < 2; w++) {
+                    n += snprintf(b + n, sizeof(b) - n, "%s", w ? " | worker:" : "xfsub render:");
+                    for (k = 0; k < 4; k++)
+                        n += snprintf(b + n, sizeof(b) - n, " %s %.2f ms %u v %u seg", kn[k],
+                                      g_xfsub_us[w][k] / 1000.0 / nf, g_xfsub_v[w][k] / (unsigned)nf,
+                                      g_xfsub_n[w][k] / (unsigned)nf);
+                }
+                port_log("%s", b);
+                memset(g_xfsub_us, 0, sizeof(g_xfsub_us));
+                memset(g_xfsub_v, 0, sizeof(g_xfsub_v));
+                memset(g_xfsub_n, 0, sizeof(g_xfsub_n));
+            }
+        }
         if (g_shc_n || g_shc_hit)
             port_log("shaders: %u compiled (vs %.1f ms, fs %.1f ms, link+lookups %.1f ms), %u from cache (%.1f ms)",
                      g_shc_n, g_shc_us[0] / 1000.0, g_shc_us[1] / 1000.0, g_shc_us[2] / 1000.0, g_shc_hit,

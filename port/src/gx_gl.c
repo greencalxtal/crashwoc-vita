@@ -2910,9 +2910,34 @@ static void rt_expand_idx(RFrame *fr, const XfSeg *sg) {
     for (; j < n; j++) ix[j] = (u16)(r[j] + b);
 }
 
+/* CWOC_XFSUB=1 (measurement only): time and vertices of the deferred
+ * transform per segment kind, render thread [0] and worker [1]: 0 skinned
+ * from a cached static skin list, 1 converted copy (src), 2 skinned, 3 view
+ * transform only. Reported with the perf lines (port_video.c). */
+int g_xfsub_on = -1;
+uint64_t g_xfsub_us[2][4];
+unsigned g_xfsub_v[2][4], g_xfsub_n[2][4];
+static SDL_threadID g_wk_tid;
+static void rt_xf_seg_impl(RFrame *fr, const XfSeg *sg);
+static void rt_xf_seg(RFrame *fr, const XfSeg *sg) {
+    uint64_t t0;
+    int k, w;
+    if (g_xfsub_on < 0) g_xfsub_on = getenv("CWOC_XFSUB") && getenv("CWOC_XFSUB")[0] == '1';
+    if (!g_xfsub_on) {
+        rt_xf_seg_impl(fr, sg);
+        return;
+    }
+    k = sg->skm >= 0 && sg->src != NULL ? 0 : sg->src != NULL ? 1 : sg->skm >= 0 ? 2 : 3;
+    w = g_wk_tid && SDL_ThreadID() == g_wk_tid;
+    t0 = port_prof_now();
+    rt_xf_seg_impl(fr, sg);
+    g_xfsub_us[w][k] += port_prof_now() - t0;
+    g_xfsub_v[w][k] += (unsigned)sg->count;
+    g_xfsub_n[w][k]++;
+}
 /* view-transform (or skin / convert) one recorded segment into g_rt_out,
  * and write its deferred indices: render thread or transform worker */
-static void rt_xf_seg(RFrame *fr, const XfSeg *sg) {
+static void rt_xf_seg_impl(RFrame *fr, const XfSeg *sg) {
     const GLVertex *sp = fr->v + sg->vfirst;
     GLVertex *d = g_rt_out + sg->vfirst, *e = d + sg->count;
     if (sg->rel != NULL) rt_expand_idx(fr, sg);
@@ -2993,6 +3018,7 @@ unsigned g_wk_jobs;
 
 static int wk_thread(void *arg) {
     (void)arg;
+    g_wk_tid = SDL_ThreadID();
     { extern void port_thread_register(const char *name); port_thread_register("gxxform"); }
 #ifdef PORT_VITA
     sceKernelChangeThreadCpuAffinityMask(0, SCE_KERNEL_CPU_MASK_USER_2);
