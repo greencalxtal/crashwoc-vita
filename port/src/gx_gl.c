@@ -1839,6 +1839,7 @@ static struct {
     GLuint prog;
 } g_gl;
 
+static int g_blend10; /* CWOC_BLEND10=1: GX blend (1, 0) drawn with GL blending (as before) */
 static void apply_state(const BatchState *b) {
     static const GLenum zfunc[8] = { GL_NEVER, GL_LESS, GL_EQUAL, GL_LEQUAL, GL_GREATER, GL_NOTEQUAL, GL_GEQUAL, GL_ALWAYS };
     float sx = (float)g_draw_w / 640.0f, sy = (float)g_draw_h / 448.0f;
@@ -1877,6 +1878,11 @@ static void apply_state(const BatchState *b) {
     if (b->blend_type == 1) {
         blend = 1; beq = GL_FUNC_ADD;
         bsrc = (int)blend_factor(b->blend_src, 1); bdst = (int)blend_factor(b->blend_dst, 0);
+        /* GX blend (1, 0) is how the game draws its opaque geometry: src*1 + dst*0
+         * is the source, so draw it without blending. A blending draw is not
+         * opaque to the Vita GPU (no hidden surface removal: every covered
+         * pixel is shaded). CWOC_BLEND10=1 keeps the blending (A/B). */
+        if (bsrc == GL_ONE && bdst == GL_ZERO && !g_blend10) blend = 0;
     } else if (b->blend_type == 3) {
         blend = 1; beq = GL_FUNC_REVERSE_SUBTRACT; bsrc = GL_ONE; bdst = GL_ONE;
     } else {
@@ -4651,6 +4657,7 @@ void port_gx_init(void) {
     port_prof_calibrate();
     rq_init();
     g_mipmaps = !(getenv("CWOC_MIPMAPS") && getenv("CWOC_MIPMAPS")[0] == '0');
+    g_blend10 = getenv("CWOC_BLEND10") && getenv("CWOC_BLEND10")[0] == '1';
 #if defined(PORT_VITA) && defined(__ARM_NEON)
     {
         /* the NEON matrix products must match the game's scalar ones bit for bit */
