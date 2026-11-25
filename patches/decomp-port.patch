@@ -3775,7 +3775,7 @@ index 61054f6..f1dd8ec 100644
      memset(&light[id],0,100);
      NuMtxSetIdentity((struct Mtx *)&light[id].light.mtx);
 diff --git a/src/nu3dx/numtl.c b/src/nu3dx/numtl.c
-index 9685b8c..ad71754 100644
+index 9685b8c..d7cd1e6 100644
 --- a/src/nu3dx/numtl.c
 +++ b/src/nu3dx/numtl.c
 @@ -200,6 +200,9 @@ struct numtl_s * NuMtlRead(s32 fh) {
@@ -3788,7 +3788,7 @@ index 9685b8c..ad71754 100644
    return mtl;
  }
  
-@@ -457,11 +460,23 @@ LAB_800b3394:
+@@ -457,11 +460,27 @@ LAB_800b3394:
    return;
  }
  
@@ -3803,6 +3803,10 @@ index 9685b8c..ad71754 100644
 +#endif
  //NGC MATCH
  void NuMtlRender(void) {
++#ifdef PORT
++  extern void port_gx_rec_all(int on);
++  port_gx_rec_all(1); /* the whole pass recorded for the GX thread */
++#endif
    DBTimerStart(0x13);
 +  MSUB_B(0, 1);
    NuMtlRender3d();
@@ -3812,7 +3816,7 @@ index 9685b8c..ad71754 100644
    DBTimerStart(0x12);
    DBTimerEnd(0x12);
    DBTimerStart(0x11);
-@@ -469,9 +484,13 @@ void NuMtlRender(void) {
+@@ -469,9 +488,13 @@ void NuMtlRender(void) {
    DBTimerStart(0x10);
    NuMtlRenderDynamic2d3d();
    DBTimerEnd(0x10);
@@ -3826,7 +3830,7 @@ index 9685b8c..ad71754 100644
    DBTimerStart(0xe);
    NuMtlRenderFaceOn();
    DBTimerEnd(0xe);
-@@ -484,15 +503,20 @@ void NuMtlRender(void) {
+@@ -484,15 +507,23 @@ void NuMtlRender(void) {
    DBTimerStart(10);
    NuMtlRenderWater();
    DBTimerEnd(10);
@@ -3844,10 +3848,13 @@ index 9685b8c..ad71754 100644
    NuMtlRenderUpd();
    DBTimerEnd(7);
 +  MSUB_E(6);
++#ifdef PORT
++  port_gx_rec_all(0);
++#endif
    return;
  }
  
-@@ -501,19 +525,46 @@ static void NuMtlRender3d(void) {
+@@ -501,19 +532,46 @@ static void NuMtlRender3d(void) {
    struct nusysmtl_s *sm;
    struct nurndritem_s *ri;
  

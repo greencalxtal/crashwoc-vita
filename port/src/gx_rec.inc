@@ -373,41 +373,70 @@ static void rec_replay_skin_draw(const RecSkinDraw *r) {
 /* recording on/off around the static pass (numtl.c NuMtlRender3d). Off:
  * wait for the GX thread to replay everything, then the game thread uses
  * the GX state directly again (the GX thread is idle until the next pass). */
+/* scopes nest: the static pass (NuMtlRender3d) inside the whole material
+ * pass (port_gx_rec_all); recording ends when the outermost one closes, or
+ * at a forced close (rec_close: present, loads, scene start) */
+static int g_rec_depth;
 void port_gx_rec_scope(int on) {
     if (!g_rec_on) return;
-    if (on && !g_rec_active) {
+    if (on) {
+        if (g_rec_active) {
+            g_rec_depth++;
+            return;
+        }
         if (g_in_begin) return; /* a direct block is incomplete: stay direct */
         memcpy(g_rsh_desc, gx.vtxdesc, sizeof(g_rsh_desc));
         memcpy(g_rsh_fmt, gx.fmt, sizeof(g_rsh_fmt));
         port_gx_wp = port_gx_end = g_rec_scratch;
         g_rec_dd = 0; /* the state was set directly since the last pass */
+        g_rec_depth = 1;
         g_rec_active = 1;
-    } else if (!on && g_rec_active) {
+    } else if (g_rec_active) {
+        if (--g_rec_depth > 0) return;
         if (g_rec_inblock) rec_block_abort();
+        g_rec_depth = 0;
         g_rec_active = 0;
         rec_sync();
         port_gx_wp = port_gx_end = g_fifo;
     }
 }
+static void rec_close(void) {
+    if (!g_rec_active) return;
+    g_rec_depth = 1;
+    port_gx_rec_scope(0);
+}
+
+/* the whole material pass (NuMtlRender: static, dynamic, sorted, face-on,
+ * water, stencil) recorded for the GX thread, not only the static pass: the
+ * game thread only walks the lists while the GX thread converts, and waits
+ * for it once at the end. Every path those passes reach goes through recorded
+ * GX calls (gx_rec_gen.h, the special records above) or keeps its data
+ * until the frame's present (dynamic geometry is reset only by the next
+ * scene). CWOC_RECALL=0: only the static pass (as before). */
+void port_gx_rec_all(int on) {
+    static int all = -1;
+    if (all < 0) all = !(getenv("CWOC_RECALL") && getenv("CWOC_RECALL")[0] == '0');
+    if (all) port_gx_rec_scope(on);
+}
 
 void port_gx_present(int frame) {
-    if (g_rec_active) port_gx_rec_scope(0);
+    rec_close();
     gxi_port_gx_present(frame);
 }
 
 void port_gx_idle_for_load(void) {
-    if (g_rec_active) port_gx_rec_scope(0);
+    rec_close();
     gxi_port_gx_idle_for_load();
 }
 
 void port_gx_finish(void) {
-    if (g_rec_active) port_gx_rec_scope(0);
+    rec_close();
     gxi_port_gx_finish();
 }
 
 /* NuRndrBeginScene (nurndr.c): nothing is recorded outside the static pass */
 void port_gx_scene_sync(void) {
-    if (g_rec_active) port_gx_rec_scope(0);
+    rec_close();
 }
 
 static void rec_replay(int op, void *p) {
