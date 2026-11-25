@@ -463,7 +463,7 @@ static void decode_vertex(const u8 *src, GLVertex *v) {
 }
 
 /* -------------------------------------------------------------- shaders */
-typedef struct {
+typedef struct ShaderEntry_s {
     u32 key[8];
     GLuint prog;
     GLint u_proj, u_posmtx, u_nrmmtx, u_amb, u_mat, u_lightpos, u_lightcol, u_alpharef, u_fog, u_fogcol;
@@ -476,6 +476,11 @@ typedef struct {
     LightSlot last_lights[8];
     int last_aref0, last_aref1;
     float last_fog_start, last_fog_end;
+    /* alpha test that may be dropped (nodisc_variant): -1 unknown, 0 no, 1 yes;
+     * atest_lo: lowest alpha from which every value passes, for the reference
+     * values atest_ref (uniforms, not in the key) */
+    int atest_drop, atest_lo, atest_ref;
+    struct ShaderEntry_s *nodisc; /* the same shader without the alpha test */
 } ShaderEntry;
 
 #define MAX_SHADERS 256
@@ -579,13 +584,14 @@ static inline int chan_lit(void) { return gx.num_chans && gx.chan[0].enable; }
 static inline int lit_count(void) { return chan_lit() ? __builtin_popcount((unsigned)gx.chan[0].light_mask & 0xFFu) : 0; }
 
 /* the key holds exactly what changes the generated GLSL */
+static int g_nodisc_gen; /* generating the variant without the alpha test (nodisc_variant) */
 static void build_key(u32 key[8]) {
     int i, lit = chan_lit(), nl = lit_count();
     memset(key, 0, 8 * sizeof(u32));
     key[0] = (u32)gx.num_tev | (u32)lit << 4 | (u32)gx.chan[0].mat_src << 5 | (u32)(lit ? gx.chan[0].amb_src : 0) << 6 |
              (u32)gx.chan[1].mat_src << 8 | (u32)(nl ? gx.chan[0].diff_fn : 0) << 10 |
              (u32)(gx.fog_type ? 1 : 0) << 14 | (u32)gx.alpha_comp0 << 15 | (u32)gx.alpha_comp1 << 18 |
-             (u32)gx.alpha_op << 21 | (u32)atest_redundant() << 24;
+             (u32)gx.alpha_op << 21 | (u32)atest_redundant() << 24 | (u32)g_nodisc_gen << 25;
     key[1] = (u32)nl;
     for (i = 0; i < gx.num_tev && i < MAX_TEV; i++) {
         const TevStage *t = &gx.tev[i];
@@ -741,7 +747,7 @@ static ShaderEntry *get_shader_inner(void) {
     }
     /* alpha compare */
     if (!(gx.alpha_comp0 == 7 && gx.alpha_comp1 == 7 && gx.alpha_op == 1) &&
-        !(gx.alpha_comp0 == 7 && gx.alpha_op == 1) && !atest_redundant()) {
+        !(gx.alpha_comp0 == 7 && gx.alpha_op == 1) && !atest_redundant() && !g_nodisc_gen) {
         const char *op = gx.alpha_op == 0 ? "&&" : gx.alpha_op == 1 ? "||" : gx.alpha_op == 2 ? "!=" : "==";
         p += sprintf(p, "  {\n    float a = floor(prev.a * 255.0 + 0.5);\n    float r;\n    bool t0, t1;\n");
         p += sprintf(p, "    r = u_alpharef.x; t0 = %s;\n", alpha_cmp_glsl(gx.alpha_comp0));
@@ -769,6 +775,8 @@ static ShaderEntry *get_shader_inner(void) {
     e->fsrc = strdup(fs);
     e->prog = 0;
     e->uset = 0;
+    e->atest_drop = -1;
+    e->nodisc = NULL;
     return e;
 }
 
@@ -1009,6 +1017,7 @@ typedef struct {
     u32 full_frame;    /* frame of the last full hash */
     u32 last_use;
     u32 checked; /* frame in which the contents hash was last verified */
+    int amin;    /* lowest texel alpha (nodisc_variant) */
     /* render thread */
     GLuint gltex;
     int wrap_s, wrap_t; /* GL wrap modes currently set on the texture (-1: unknown) */
@@ -1462,6 +1471,13 @@ static int get_texture(const PortTexObj *t) {
     e->checked = g_frame;
     rgba = malloc((size_t)t->width * t->height * 4);
     decode_texture(t->image, t->width, t->height, t->format, rgba);
+    {
+        const u8 *a = rgba + 3, *end = rgba + (size_t)t->width * t->height * 4;
+        int m = 255;
+        for (; a < end && m; a += 4)
+            if (*a < m) m = *a;
+        e->amin = m;
+    }
     if (getenv("CWOC_TEXDUMP")) {
         static int dumped;
         char path[256];
@@ -2406,13 +2422,120 @@ static void record_draw(ShaderEntry *sh, const BatchState *st, GLenum mode, int 
 /* game thread: a static draw. The caller ended the pending batch (draw
  * order); extends the previous static draw when it continues it (same
  * state, textures, matrices and page, contiguous indices). */
+/* ---- alpha test without discard. A shader with `discard` (the GX alpha
+ * test) is not opaque to the Vita GPU: no hidden surface removal, every
+ * covered pixel is shaded. The level geometry is drawn with an alpha test
+ * "a > 0" that never rejects anything when its texture has no texel of alpha
+ * 0 and its vertices none either. For a static draw both are known (texture
+ * alpha minimum at decode, vertex alpha minimum at the copy to GPU memory),
+ * so a lower bound of the TEV alpha (interval arithmetic over the stages,
+ * as the generator computes them) tells whether the test can ever reject;
+ * when it cannot, the variant without the test is drawn: the same pixels.
+ * CWOC_NODISC=0: always the shader with the test (A/B). */
+static int g_nodisc_on = -1;
+typedef struct { float lo, hi; } AIv;
+static AIv aiv_mix(AIv a, AIv b, AIv c) {
+    AIv r = {1e9f, -1e9f};
+    int i;
+    for (i = 0; i < 8; i++) { /* multilinear: extremes at the corners */
+        float x = (i & 1) ? a.hi : a.lo, y = (i & 2) ? b.hi : b.lo, t = (i & 4) ? c.hi : c.lo;
+        float v = x * (1.0f - t) + y * t;
+        if (v < r.lo) r.lo = v;
+        if (v > r.hi) r.hi = v;
+    }
+    return r;
+}
+/* lowest alpha of the TEV output (0..1) for texture alpha minima tmin[] (0..255,
+ * -1: unknown) and the rasterized alpha range; gx holds this shader's state */
+static float tev_alpha_lo(const int *tmin, AIv ras_ch) {
+    AIv reg[4] = {{1, 1}, {0, 0}, {0, 0}, {0, 0}}; /* prev, c0, c1, c2 as generated */
+    int i, k;
+    if (gx.num_tev == 0) return ras_ch.lo;
+    for (i = 0; i < gx.num_tev && i < MAX_TEV; i++) {
+        const TevStage *t = &gx.tev[i];
+        int has_tex = t->texmap != 0xFF && gx.texmap_valid[t->texmap & 7];
+        AIv in[4], m, r;
+        float sc = t->alpha_scale == 1 ? 2.0f : t->alpha_scale == 2 ? 4.0f : t->alpha_scale == 3 ? 0.5f : 1.0f;
+        float bias = t->alpha_bias == 1 ? 0.5f : t->alpha_bias == 2 ? -0.5f : 0.0f;
+        for (k = 0; k < 4; k++) {
+            switch (t->alpha_in[k]) {
+            case 0: in[k] = reg[0]; break;
+            case 1: in[k] = reg[1]; break;
+            case 2: in[k] = reg[2]; break;
+            case 3: in[k] = reg[3]; break;
+            case 4:
+                if (!has_tex) in[k] = (AIv){1, 1};
+                else if (tmin[i] < 0) return 0.0f;
+                else in[k] = (AIv){tmin[i] / 255.0f, 1};
+                break;
+            case 5: in[k] = t->channel != 0xFF ? ras_ch : (AIv){0, 0}; break;
+            case 6: in[k] = (AIv){1, 1}; break;
+            default: in[k] = (AIv){0, 0}; break;
+            }
+        }
+        m = aiv_mix(in[0], in[1], in[2]);
+        if (t->alpha_op) r = (AIv){in[3].lo - m.hi, in[3].hi - m.lo};
+        else r = (AIv){in[3].lo + m.lo, in[3].hi + m.hi};
+        r.lo = (r.lo + bias) * sc;
+        r.hi = (r.hi + bias) * sc;
+        if (t->alpha_clamp) {
+            r.lo = r.lo < 0 ? 0 : r.lo > 1 ? 1 : r.lo;
+            r.hi = r.hi < 0 ? 0 : r.hi > 1 ? 1 : r.hi;
+        }
+        reg[t->alpha_reg & 3] = r;
+    }
+    return reg[0].lo;
+}
+static ShaderEntry *nodisc_variant(ShaderEntry *s, const int *slots, int vmin) {
+    int i, tmin[MAX_TEV];
+    AIv ras;
+    if (g_nodisc_on < 0) g_nodisc_on = !(getenv("CWOC_NODISC") && getenv("CWOC_NODISC")[0] == '0');
+    if (!g_nodisc_on || !s || vmin < 0) return s;
+    if (s->atest_drop < 0) {
+        /* once per shader: does it test (its state is gx's: same key) */
+        u32 key[8];
+        build_key(key);
+        s->atest_drop = 0;
+        s->atest_ref = -1;
+        if (!memcmp(key, s->key, sizeof(key)) && strstr(s->fsrc, "discard")) {
+            g_nodisc_gen = 1;
+            s->nodisc = get_shader_inner();
+            g_nodisc_gen = 0;
+            s->atest_drop = s->nodisc != s && s->nodisc != &g_shaders[0];
+        }
+    }
+    if (s->atest_drop != 1) return s;
+    {
+        /* from which alpha does every value pass, for this draw's references
+         * (the compares and the op are the shader's: part of its key) */
+        int ref = (g_bstate.aref0 & 0xFF) | (g_bstate.aref1 & 0xFF) << 8, a, lo = 256;
+        if (ref != s->atest_ref) {
+            for (a = 255; a >= 0; a--) {
+                int t0 = atest_pass(gx.alpha_comp0, a, g_bstate.aref0), t1 = atest_pass(gx.alpha_comp1, a, g_bstate.aref1);
+                int ok = gx.alpha_op == 0 ? (t0 && t1) : gx.alpha_op == 1 ? (t0 || t1) : gx.alpha_op == 2 ? (t0 != t1) : (t0 == t1);
+                if (!ok) break;
+                lo = a;
+            }
+            s->atest_ref = ref;
+            s->atest_lo = lo;
+        }
+        if (s->atest_lo > 255) return s;
+    }
+    for (i = 0; i < MAX_TEV; i++) tmin[i] = slots[i] >= 0 ? g_texcache[slots[i]].amin : -1;
+    if (gx.chan[1].mat_src) ras = (AIv){vmin / 255.0f, 1};
+    else ras = (AIv){g_bstate.mat.a / 255.0f, g_bstate.mat.a / 255.0f};
+    /* floor(a * 255 + 0.5) >= lo for every pixel, with half a step of margin */
+    return tev_alpha_lo(tmin, ras) * 255.0f >= (float)s->atest_lo ? s->nodisc : s;
+}
+
 static int g_last_sm = -1;            /* static matrix set of the last static draw */
 /* state entry and texture slots of the last static draw, valid while
  * g_bstate (version) and the frame's state list are unchanged */
 static u32 g_sd_ver;
 static int g_sd_st = -1, g_sd_slots[MAX_TEV];
-static void record_draw_static(u32 first, u32 n, int page) {
+static void record_draw_static(u32 first, u32 n, int page, int vmin) {
     RFrame *fr;
+    ShaderEntry *sh;
     const float (*m)[4] = gx.posmtx[gx.cur_posmtx];
     const float (*q)[3] = gx.nrmmtx[gx.cur_posmtx];
     float mq[21];
@@ -2437,9 +2560,10 @@ static void record_draw_static(u32 first, u32 n, int page) {
         g_last_sm = g_nsm++;
     }
     g_sg_lists++;
+    sh = nodisc_variant(g_bshader, slots, vmin);
     if (g_ncmd > g_npub_local) { /* the previous command is still unpublished: merge? */
         RCmd *p = &fr->cmd[g_ncmd - 1];
-        if (p->type == CMD_DRAW_STATIC && p->u.sdraw.sh == g_bshader && p->u.sdraw.st == g_nst - 1 &&
+        if (p->type == CMD_DRAW_STATIC && p->u.sdraw.sh == sh && p->u.sdraw.st == g_nst - 1 &&
             p->u.sdraw.mtx == g_last_sm && p->u.sdraw.page == page && p->u.sdraw.first + p->u.sdraw.n == first &&
             !memcmp(p->u.sdraw.texslot, slots, sizeof(g_sd_slots))) {
             p->u.sdraw.n += n;
@@ -2448,7 +2572,7 @@ static void record_draw_static(u32 first, u32 n, int page) {
     }
     c = rq_cmd();
     c->type = CMD_DRAW_STATIC;
-    c->u.sdraw.sh = g_bshader;
+    c->u.sdraw.sh = sh;
     c->u.sdraw.first = first;
     c->u.sdraw.n = n;
     c->u.sdraw.st = g_nst - 1;
@@ -3787,6 +3911,7 @@ typedef struct {
     u32 stamp; /* frame of the last hit: picks the victim of a 2-way set */
     /* static geometry copy: 0 not tried, 1 in GPU memory, 2 not possible */
     u8 sg_state;
+    u8 sg_amin;  /* lowest vertex alpha of the copied range (nodisc_variant) */
     u16 sg_page;
     u32 sg_first;      /* first index in the index arena */
     const void *sg_vl; /* vertex array it was made from */
@@ -3897,8 +4022,10 @@ static int sg_make(IdxCache *c, const PortGSVertex *vl) {
     }
     if (g_sg_in + n > g_sg_icap) goto full;
     d = g_sg_v + (size_t)g_sg_page * SG_PAGE_VERTS + g_sg_pv;
+    c->sg_amin = 255;
     for (j = 0; j < range; j++, d++, sv++) {
         u32 cl = sv->diffuse;
+        if ((u8)cl < c->sg_amin) c->sg_amin = (u8)cl;
         memcpy(d->pos, &sv->x, 24); /* pos + nrm, model space */
         d->clr[0] = (u8)(cl >> 24);
         d->clr[1] = (u8)(cl >> 16);
@@ -3968,7 +4095,7 @@ static int draw_indexed_range(int strips, const short *idx, u32 count, const Por
                     if (ok) {
                         ds_mark(1);
                         batch_emit(); /* draw order: the pending batch goes first */
-                        record_draw_static(c->sg_first, c->nitot, c->sg_page);
+                        record_draw_static(c->sg_first, c->nitot, c->sg_page, c->sg_amin);
                         port_gx_stats_draw((int)c->range);
                         g_idxc_hit++;
                         ds_mark(2);

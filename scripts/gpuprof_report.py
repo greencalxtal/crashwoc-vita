@@ -51,6 +51,35 @@ def table(title, rows, frames, total, limit=None):
     return out
 
 
+def whole_window(an, rep, frames):
+    """Signal assertion over every sample of the window (the sampler only runs
+    inside it), not only inside matched fragment-draw windows as analyze.py
+    reports them: vertex work and idle time included. Rate x window time per
+    frame = an estimate of the ms per frame each signal is asserted (any of
+    the 4 cores, averaged over cores)."""
+    samples = [s for s in rep["diagnostics"] if not s["result"]]
+    if not samples or frames < 1:
+        return []
+    span = (max(s["after_us"] for s in samples) - min(s["before_us"] for s in samples)) / 1000.0
+    lookup = collections.defaultdict(list)
+    for metric, _cat, name, selectors in an.PIPELINE_METRICS:
+        for group, bit in selectors:
+            lookup[group].append((name, bit))
+    seen, hit = collections.Counter(), collections.Counter()
+    for s in samples:
+        for name, bit in lookup.get(s["group"], ()):
+            for c in s["cores"]:
+                seen[name] += 1
+                hit[name] += bool(c["value"] & (1 << bit))
+    out = ["", "### Whole window (all samples, %.1f ms/frame of wall time)" % (span / frames), "",
+           "| signal | rate | ≈ ms/frame | samples |", "|---|---:|---:|---:|"]
+    for _m, _cat, name, _sel in an.PIPELINE_METRICS:
+        if seen[name]:
+            r = hit[name] / seen[name]
+            out.append("| %s | %.1f %% | %.1f | %d |" % (name, 100 * r, r * span / frames, seen[name]))
+    return out
+
+
 def main():
     prefix = sys.argv[1]
     an = load_analyzer()
@@ -140,6 +169,7 @@ def main():
                 r["zen"], r["zup"], r["zfn"], r["tw"], r["th"], r["ntev"], ms))
         else:
             out.append("| %s | | | | | | | | | %.3f |" % (name or "(unnamed)", ms))
+    out += whole_window(an, rep, frames)
     out += ["", "## analyze.py", "", "```", an.format_report(rep), "```"]
     print("\n".join(out))
 
