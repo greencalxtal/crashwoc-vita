@@ -3775,7 +3775,7 @@ index 61054f6..f1dd8ec 100644
      memset(&light[id],0,100);
      NuMtxSetIdentity((struct Mtx *)&light[id].light.mtx);
 diff --git a/src/nu3dx/numtl.c b/src/nu3dx/numtl.c
-index 9685b8c..d7cd1e6 100644
+index 9685b8c..1297808 100644
 --- a/src/nu3dx/numtl.c
 +++ b/src/nu3dx/numtl.c
 @@ -200,6 +200,9 @@ struct numtl_s * NuMtlRead(s32 fh) {
@@ -3854,7 +3854,7 @@ index 9685b8c..d7cd1e6 100644
    return;
  }
  
-@@ -501,19 +532,46 @@ static void NuMtlRender3d(void) {
+@@ -501,19 +532,52 @@ static void NuMtlRender3d(void) {
    struct nusysmtl_s *sm;
    struct nurndritem_s *ri;
  
@@ -3867,9 +3867,15 @@ index 9685b8c..d7cd1e6 100644
    for (sm = smlist; sm != NULL; sm = sm->next) {
      if (((sm->mtl).L == '\0') && (sm->rndrlist != NULL)) {
 +      MSUB_B(1, 4);
++#ifdef PORT
++      extern int port_ablate(void);
++      if (port_ablate() != 8) /* measurement only */
++#endif
++      {
        NuTexSetTexture(0,(sm->mtl).tid);
        NuMtlSetRenderStates(&sm->mtl);
        NuTexSetTextureStates(&sm->mtl);
++      }
 +      MSUB_E(1);
        for (ri = sm->rndrlist; ri != NULL; ri = ri->next) {
 +#ifdef PORT
@@ -3901,8 +3907,23 @@ index 9685b8c..d7cd1e6 100644
    return;
  }
  
+@@ -560,6 +624,14 @@ static void NuMtlRenderDynamic2d3d(void) {
+ static void NuMtlRenderOT(s32 begin,s32 end) {
+   struct nuotitem_s *oti;
+   s32 i;
++#ifdef PORT
++  extern int port_ablate(void);
++
++  if (port_ablate() == 7) { /* measurement only: the sorted passes left out */
++    for (i = begin; i <= end; i++) ot[i] = NULL;
++    return;
++  }
++#endif
+ 
+   GS_SetAlphaCompare(7,0);
+     for (i = begin; i <= end; i++) {
 diff --git a/src/nu3dx/nurndr.c b/src/nu3dx/nurndr.c
-index b2137e9..609086f 100644
+index b2137e9..1ef2ffe 100644
 --- a/src/nu3dx/nurndr.c
 +++ b/src/nu3dx/nurndr.c
 @@ -5,6 +5,7 @@
@@ -3983,7 +4004,7 @@ index b2137e9..609086f 100644
          vtx--;
      }
      
-@@ -650,17 +684,48 @@ void NuRndrFaceItem(struct nugeomitem_s* item) {
+@@ -650,17 +684,56 @@ void NuRndrFaceItem(struct nugeomitem_s* item) {
  }
  
  //MATCH GCN
@@ -3996,14 +4017,22 @@ index b2137e9..609086f 100644
 +#define MSUB_B(k, r)
 +#define MSUB_E(k)
 +#endif
++#ifdef PORT
++/* CWOC_ABLATE=N, measurement only (the picture breaks): leave out a part of
++ * the material pass to see its real cost without timers. Geometry items: 1
++ * matrix, 2 SetupShaders, 3 the primitives, 4 the whole item; 5 skinned
++ * items; numtl.c: 7 the sorted (OT) passes, 8 the static pass's material
++ * setup (texture, render and texture states). */
++int port_ablate(void) {
++  static int ablate = -1;
++  if (ablate < 0) ablate = getenv("CWOC_ABLATE") ? atoi(getenv("CWOC_ABLATE")) : 0;
++  return ablate;
++}
++#endif
  static void NuRndrGeomItem(struct nugeomitem_s *item) {
    struct nuprim_s *prim;
 +#ifdef PORT
-+  /* CWOC_ABLATE=N, measurement only (the picture breaks): leave out a part of
-+   * the per-item work to see its real cost without timers. 1 matrix, 2
-+   * SetupShaders, 3 the primitives, 4 the whole item. */
-+  static int ablate = -1;
-+  if (ablate < 0) ablate = getenv("CWOC_ABLATE") ? atoi(getenv("CWOC_ABLATE")) : 0;
++  const int ablate = port_ablate();
 +  if (ablate == 4) return;
 +#endif
  
@@ -4032,7 +4061,7 @@ index b2137e9..609086f 100644
    for (prim = item->geom->prim; prim != NULL; prim = prim->next) {
            switch (prim->type) {
                case NUPT_POINT:
-@@ -685,10 +750,78 @@ static void NuRndrGeomItem(struct nugeomitem_s *item) {
+@@ -685,10 +758,78 @@ static void NuRndrGeomItem(struct nugeomitem_s *item) {
                break;
            }
    }
@@ -4111,7 +4140,7 @@ index b2137e9..609086f 100644
  //NGC MATCH
  static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
    float blendval;
-@@ -703,12 +836,74 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
+@@ -703,12 +844,74 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
  
    blendgeom = item->geom->blendgeom;
    DBTimerStart(4);
@@ -4186,7 +4215,7 @@ index b2137e9..609086f 100644
      for (i = 0; i < item->geom->vtxcnt; i++) {
          destvb->x = srcverts->pnt.x;
          destvb->y = srcverts->pnt.y;
-@@ -727,9 +922,13 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
+@@ -727,9 +930,13 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
        destvb = destvb + 1;
        srcverts = srcverts + 1;
      }
@@ -4200,7 +4229,7 @@ index b2137e9..609086f 100644
    SetupShaders(item);
    GS_LoadWorldMatrixIdentity();
    GS_SetVertexSource((float *)item->geom->hVB);
-@@ -743,6 +942,7 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
+@@ -743,6 +950,7 @@ static void NuRndrBlendedSkinItem(struct nugeomitem_s* item) {
        NuErrorProlog("C:/source/crashwoc/code/nu3dx/nurndr.c",0x1087)("NuRndrGeomItem : Unknown primitive type!");
      }
    }
@@ -4208,7 +4237,7 @@ index b2137e9..609086f 100644
    DBTimerEnd(4);
    return;
  }
-@@ -756,7 +956,10 @@ void NuRndrSkinItem2(struct nugeomitem_s *item) {
+@@ -756,7 +964,10 @@ void NuRndrSkinItem2(struct nugeomitem_s *item) {
          return;
      }
      DBTimerStart(5);
@@ -4219,7 +4248,7 @@ index b2137e9..609086f 100644
      GS_LoadWorldMatrixIdentity();
      GS_SetVertexSource((float *)item->geom->hVB);
      for (prim = item->geom->prim; prim != NULL; prim = prim->next) {
-@@ -768,6 +971,7 @@ void NuRndrSkinItem2(struct nugeomitem_s *item) {
+@@ -768,6 +979,7 @@ void NuRndrSkinItem2(struct nugeomitem_s *item) {
              NuErrorProlog("C:/source/crashwoc/code/nu3dx/nurndr.c",0xf4e)("NuRndrGeomItem : Unknown primitive type!");
          }
      }
@@ -4227,7 +4256,7 @@ index b2137e9..609086f 100644
      DBTimerEnd(5);
      return;
  }
-@@ -791,22 +995,30 @@ void NuRndrItem(struct nurndritem_s *item) {
+@@ -791,22 +1003,33 @@ void NuRndrItem(struct nurndritem_s *item) {
          switch (item->type) {
                      case NURNDRITEM_GEOM2D:
                          DBTimerStart(0x1e);
@@ -4244,6 +4273,9 @@ index b2137e9..609086f 100644
                          DBTimerEnd(0x1f);
                          break;
                      case NURNDRITEM_SKIN3D2:
++#ifdef PORT
++                        if (port_ablate() == 5) break;
++#endif
                          DBTimerStart(0x20);
 +                        MSUB_B(9, 8);
                          NuRndrSkinItem2((struct nugeomitem_s *)item);
