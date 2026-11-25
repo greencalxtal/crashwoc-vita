@@ -5799,7 +5799,7 @@ index 18d4ff2..7e6d305 100644
                  for(ix2 = 0; ix2 < numinst; ix2++) {
                      globalix1 = ix1;
 diff --git a/src/system/crashlib.c b/src/system/crashlib.c
-index a44697f..dd87387 100644
+index a44697f..6be9f18 100644
 --- a/src/system/crashlib.c
 +++ b/src/system/crashlib.c
 @@ -16,20 +16,49 @@ struct nuvec_s* edmainQueryLocVec(void) {
@@ -5852,11 +5852,18 @@ index a44697f..dd87387 100644
      time = timeGetTime();
      timers[slotix].start = time;
  }
-@@ -40,6 +69,22 @@ void tbslotEnd(int tbh, int slotix) {
+@@ -40,6 +69,29 @@ void tbslotEnd(int tbh, int slotix) {
      unsigned long time;
      unsigned long elapsed;
  
 +#ifdef PORT
++    if (slotix == 9) {
++        /* main (translated from the PowerPC code): the world scene's drawing
++         * is done, NuWaterRender and its NuRndrEndScene come next. From here
++         * the GX thread records the rest of the frame (gx_rec.inc) */
++        extern void port_gx_rec_tail(void);
++        port_gx_rec_tail();
++    }
 +    if ((unsigned)slotix < 40) {
 +        unsigned long long el = port_prof_now() - port_tb_t0[slotix];
 +        port_tb_us[slotix] += el;
@@ -5875,7 +5882,7 @@ index a44697f..dd87387 100644
      time = timeGetTime();
      avg = timers[slotix].average;
      elapsed = time - timers[slotix].start;
-@@ -51,6 +96,9 @@ void tbslotEnd(int tbh, int slotix) {
+@@ -51,6 +103,9 @@ void tbslotEnd(int tbh, int slotix) {
  //MATCH GCN
  void DBTimerStart(int index) {
      unsigned long time;
@@ -5885,7 +5892,7 @@ index a44697f..dd87387 100644
  
      time = timeGetTime();
      DBTimers[index].start = time;
-@@ -62,6 +110,9 @@ void DBTimerEnd(int index) {
+@@ -62,6 +117,9 @@ void DBTimerEnd(int index) {
      unsigned long avg;
      unsigned long time;
      unsigned long elapsed;
@@ -5895,7 +5902,7 @@ index a44697f..dd87387 100644
  
      time = timeGetTime();
      avg = DBTimers[index].average;
-@@ -165,10 +216,18 @@ struct D3DTexture* NudxTx_Create(struct nutex_s* texture, s32 rendertargetflag)
+@@ -165,10 +223,18 @@ struct D3DTexture* NudxTx_Create(struct nutex_s* texture, s32 rendertargetflag)
                  *outbits = data2;
                  inbits16++;
                  inbits8 = (unsigned char*)outbits;
@@ -5914,7 +5921,7 @@ index a44697f..dd87387 100644
                  outbits++;
              }
              outline += width;
-@@ -187,10 +246,18 @@ struct D3DTexture* NudxTx_Create(struct nutex_s* texture, s32 rendertargetflag)
+@@ -187,10 +253,18 @@ struct D3DTexture* NudxTx_Create(struct nutex_s* texture, s32 rendertargetflag)
                  data += 0xff000000;
                  *outbits = data;
                  inbits8 = (unsigned char*)outbits;

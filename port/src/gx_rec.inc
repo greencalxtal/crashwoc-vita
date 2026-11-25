@@ -180,6 +180,7 @@ typedef struct {
     float mtx[256];
 } RecSkinDraw; /* + bn blend source vertices */
 typedef struct { int frame; } RecPresent;
+typedef struct { int maxq, nq; } RecQuads; /* + maxq * 4 PortQuadVtx (native particle quads) */
 
 /* redundant state setters dropped while recording (gen_gx_rec.py DEDUP):
  * which shadows hold a recorded call, reset when a recorded pass starts */
@@ -312,6 +313,45 @@ void port_gs_draw_indexed(int strips, const short *idx, u32 count, const void *v
     rec_commit();
 }
 
+/* native particle quads (renderpsdma): the engine writes the finished quads
+ * straight into the record; the GX thread copies them into its batch with
+ * the direct path (quads_begin_impl / quads_end_impl) */
+static RecQuads *g_rec_q;
+/* end of the ring after the last quads record; nothing recorded since means
+ * no GX state or matrix changed since those quads (a setter dropped as
+ * redundant changes nothing): the engine may skip setting the material again,
+ * as on the direct path (port_gx_quads_state_kept). Reset when the recording
+ * opens or closes (direct GX calls in between are not seen here). */
+static u32 g_rec_quads_wl = 0xFFFFFFFFu;
+static int rec_quads_kept(void) {
+    return g_rec_quads_wl == g_rec_wl;
+}
+static PortQuadVtx *rec_quads_begin(int maxq) {
+    RecQuads *r = rec_alloc(RECOP_QUADS, (u32)sizeof(RecQuads) + (u32)maxq * 4u * (u32)sizeof(PortQuadVtx));
+    r->maxq = maxq;
+    r->nq = 0;
+    g_rec_q = r;
+    return (PortQuadVtx *)(r + 1);
+}
+static void rec_quads_end(int nq) {
+    g_rec_q->nq = nq < g_rec_q->maxq ? nq : g_rec_q->maxq;
+    g_rec_q = NULL;
+    rec_commit();
+    g_rec_quads_wl = g_rec_wl;
+}
+static void rec_replay_quads(const RecQuads *r) {
+    PortQuadVtx *v;
+    if (r->nq <= 0) return;
+    v = quads_begin_impl(r->nq);
+    if (!v) return;
+    memcpy(v, r + 1, (size_t)r->nq * 4 * sizeof(PortQuadVtx));
+    quads_end_impl(r->nq);
+}
+static void rec_hud_begin(void) {
+    rec_alloc(RECOP_HUD_BEGIN, 0);
+    rec_commit();
+}
+
 static void rec_replay_draw_indexed(const RecDrawIndexed *r) {
     if (r->copied) {
         const PortGSVertex *v = (const PortGSVertex *)(r + 1);
@@ -389,6 +429,7 @@ void port_gx_rec_scope(int on) {
         memcpy(g_rsh_fmt, gx.fmt, sizeof(g_rsh_fmt));
         port_gx_wp = port_gx_end = g_rec_scratch;
         g_rec_dd = 0; /* the state was set directly since the last pass */
+        g_rec_quads_wl = 0xFFFFFFFFu;
         g_rec_depth = 1;
         g_rec_active = 1;
     } else if (g_rec_active) {
@@ -396,14 +437,42 @@ void port_gx_rec_scope(int on) {
         if (g_rec_inblock) rec_block_abort();
         g_rec_depth = 0;
         g_rec_active = 0;
+        g_rec_quads_wl = 0xFFFFFFFFu;
         rec_sync();
         port_gx_wp = port_gx_end = g_fifo;
     }
 }
+/* the frame's tail (port_gx_rec_tail): recording stays open from just before
+ * the world scene's flush through the scenes after it (particles, glass,
+ * clouds, debris, panel) and the present, and the game thread goes on into
+ * the next frame's logic while the GX thread finishes this one. The first
+ * scene of the next frame waits for it (a frame of lag at most); that wait
+ * counts as a render wait for the frame pacer. */
+static int g_rec_tail, g_rec_tail_presented;
 static void rec_close(void) {
-    if (!g_rec_active) return;
-    g_rec_depth = 1;
-    port_gx_rec_scope(0);
+    uint64_t t0 = 0;
+    if (g_rec_tail) t0 = port_prof_now();
+    if (g_rec_active) {
+        g_rec_depth = 1;
+        port_gx_rec_scope(0);
+    }
+    if (g_rec_tail) {
+        g_port_wait_us += port_prof_now() - t0;
+        g_rec_tail = g_rec_tail_presented = 0;
+    }
+}
+
+/* main.c, before the world scene's NuRndrEndScene. CWOC_RECTAIL=0: the
+ * recording closes at the end of each material pass (as before). */
+void port_gx_rec_tail(void) {
+    static int on = -1;
+    if (on < 0) on = !(getenv("CWOC_RECTAIL") && getenv("CWOC_RECTAIL")[0] == '0');
+    if (!on || !g_rec_on || g_rec_tail) return;
+    port_gx_rec_scope(1); /* this level of the scope is closed by rec_close */
+    if (g_rec_active) {
+        g_rec_tail = 1;
+        g_rec_tail_presented = 0;
+    }
 }
 
 /* the whole material pass (NuMtlRender: static, dynamic, sorted, face-on,
@@ -420,6 +489,14 @@ void port_gx_rec_all(int on) {
 }
 
 void port_gx_present(int frame) {
+    if (g_rec_tail && g_rec_active && !g_rec_tail_presented) {
+        RecPresent *r = rec_alloc(RECOP_PRESENT, sizeof(*r));
+        r->frame = frame;
+        rec_commit();
+        rec_publish();
+        g_rec_tail_presented = 1;
+        return;
+    }
     rec_close();
     gxi_port_gx_present(frame);
 }
@@ -436,6 +513,7 @@ void port_gx_finish(void) {
 
 /* NuRndrBeginScene (nurndr.c): nothing is recorded outside the static pass */
 void port_gx_scene_sync(void) {
+    if (g_rec_tail && !g_rec_tail_presented) return; /* a later scene of the same frame */
     rec_close();
 }
 
@@ -450,6 +528,8 @@ static void rec_replay(int op, void *p) {
     }
     case RECOP_SKIN_DRAW: rec_replay_skin_draw(p); break;
     case RECOP_PRESENT: gxi_port_gx_present(((RecPresent *)p)->frame); break;
+    case RECOP_QUADS: rec_replay_quads(p); break;
+    case RECOP_HUD_BEGIN: hud_begin_impl(); break;
     case RECOP_IDLE_FOR_LOAD: gxi_port_gx_idle_for_load(); break;
     case RECOP_FINISH: gxi_port_gx_finish(); break;
     case RECOP_SYNC: break;

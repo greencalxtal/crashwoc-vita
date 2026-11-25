@@ -121,7 +121,7 @@ def main():
     out.append("enum {")
     out.append("    RECOP_PAD = 0, RECOP_BLOCK, RECOP_DRAW_INDEXED, RECOP_DRAW_TSKIN, RECOP_SKIN_DRAW, RECOP_PRESENT,")
     out.append("    RECOP_IDLE_FOR_LOAD, RECOP_FINISH, RECOP_SYNC, RECOP_GXClearVtxDesc, RECOP_GXSetVtxDesc,")
-    out.append("    RECOP_GXSetVtxAttrFmt,")
+    out.append("    RECOP_GXSetVtxAttrFmt, RECOP_QUADS, RECOP_HUD_BEGIN,")
     for name, _ in FUNCS:
         out.append("    RECOP_%s," % name)
     out.append("    RECOP_N")

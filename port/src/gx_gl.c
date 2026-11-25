@@ -3407,7 +3407,9 @@ void port_gx_present(int frame) {
         SDL_UnlockMutex(g_rq_m);
         g_ws_game = "-";
         PROF_END(PROF_WAIT);
-        if (!g_rec_active) g_port_wait_us += port_prof_now() - w0;
+        /* replayed on the GX thread (recorded frame tail): the game thread
+         * counts its own wait for the GX thread instead (rec_close) */
+        if (!g_rec_active && !(g_rec_tid && SDL_ThreadID() == g_rec_tid)) g_port_wait_us += port_prof_now() - w0;
     }
     if (g_idxc_nfree) idxc_free_done();
     if (g_sg_hold > 0 && --g_sg_hold == 0) {
@@ -3701,18 +3703,44 @@ _Static_assert(sizeof(PortQuadVtx) == sizeof(GLVertex) && offsetof(PortQuadVtx, 
  * GX state is still the one of that draw (port_gx_quads_state_kept) */
 static struct { const GLVertex *bverts; int bn, bni; u32 ver, frame; unsigned mtx_ver; } g_q_last;
 
+static int rec_quads_kept(void); /* gx_rec.inc */
 int port_gx_quads_state_kept(void) {
-    return !g_rec_active && g_bshader && g_bn > 0 && g_q_last.bverts == g_bverts && g_q_last.bn == g_bn &&
+    if (g_rec_active) return rec_quads_kept();
+    return g_bshader && g_bn > 0 && g_q_last.bverts == g_bverts && g_q_last.bn == g_bn &&
            g_q_last.bni == g_bni && g_q_last.ver == g_bstate_ver && g_q_last.mtx_ver == (unsigned)g_mtx_ver &&
            g_q_last.frame == g_frame && !state_dirty();
 }
 
+static int g_psdirect = -1; /* CWOC_PSDIRECT=0: old FIFO path (A/B) */
+static PortQuadVtx *rec_quads_begin(int maxq); /* gx_rec.inc: recorded for the GX thread */
+static void rec_quads_end(int nq);
+static PortQuadVtx *quads_begin_impl(int maxq);
+static void quads_end_impl(int nq);
+static int g_rec_quads_open; /* game thread: port_gx_quads_begin handed out a record */
 PortQuadVtx *port_gx_quads_begin(int maxq) {
-    static int on = -1; /* CWOC_PSDIRECT=0: old FIFO path (A/B) */
+    if (g_psdirect < 0) g_psdirect = !(getenv("CWOC_PSDIRECT") && getenv("CWOC_PSDIRECT")[0] == '0');
+    if (!g_psdirect || maxq <= 0 || maxq * 4 > 65535) return NULL;
+    if (g_rec_active) {
+        PortQuadVtx *v = rec_quads_begin(maxq);
+        g_rec_quads_open = v != NULL;
+        return v;
+    }
+    return quads_begin_impl(maxq);
+}
+void port_gx_quads_end(int nq) {
+    if (g_rec_quads_open) {
+        g_rec_quads_open = 0;
+        rec_quads_end(nq);
+        return;
+    }
+    quads_end_impl(nq);
+}
+
+/* the direct path (game thread outside a recorded pass, or the GX thread
+ * replaying a RECOP_QUADS record) */
+static PortQuadVtx *quads_begin_impl(int maxq) {
     int n = maxq * 4, same;
     BatchState cur;
-    if (on < 0) on = !(getenv("CWOC_PSDIRECT") && getenv("CWOC_PSDIRECT")[0] == '0');
-    if (!on || g_rec_active || maxq <= 0 || n > 65535) return NULL;
     if (g_batch_on < 0) g_batch_on = getenv("CWOC_NOBATCH") == NULL;
     if (state_dirty() || !g_bn || !g_bshader || !g_batch_on) {
         PROF_BEGIN_S(PROF_CAPTURE, 16);
@@ -3735,7 +3763,7 @@ PortQuadVtx *port_gx_quads_begin(int maxq) {
     return (PortQuadVtx *)(g_bverts + g_bn);
 }
 
-void port_gx_quads_end(int nq) {
+static void quads_end_impl(int nq) {
     int base = g_bn, n = nq * 4, q;
     GLVertex *dst = g_bverts + base;
     u16 *ix = g_bidx + g_bni;
@@ -4788,12 +4816,20 @@ void port_gx_begin_frame(void) {
 }
 
 /* game thread: the HUD scene starts (crashlib.c tbslotBegin, slot 31) */
+static void rec_hud_begin(void); /* gx_rec.inc */
+static void hud_begin_impl(void);
 void port_gx_hud_begin(void) {
-    RCmd *c;
     GP_HUD();
+    if (g_rec_active) { /* in order with the recorded draws (GX thread) */
+        rec_hud_begin();
+        return;
+    }
+    hud_begin_impl();
+}
+static void hud_begin_impl(void) {
+    RCmd *c;
     g_hud_prev = 1;
     if (!g_frame_lowres || g_frame_composited) return;
-    if (g_rec_active) return; /* never inside a recorded pass (the composite then happens at present) */
     port_gx_flush();
     rq_ensure(1, 0, 0);
     c = rq_cmd();
