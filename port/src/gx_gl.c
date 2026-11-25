@@ -4051,6 +4051,30 @@ full:
     return 0;
 }
 
+/* GX thread, ahead of the replay (gx_rec.inc rec_prefetch): load the memory
+ * an indexed draw's cache lookup will read, so its misses overlap the work of
+ * the draws before it. stage 1: the list's first and last indices and its
+ * 2-way set; stage 2 (the set is cached by then): the 3 vertices sg_sum
+ * reads. Prefetches only: no effect on what is drawn. */
+static inline void idxc_prefetch(const short *idx, u32 count, const PortGSVertex *vl, int stage) {
+    u32 h = (u32)(((uintptr_t)idx >> 1) * 2654435761u) >> 18;
+    IdxCache *c0 = &g_idxc[h & ~1u];
+    if (stage == 1) {
+        __builtin_prefetch(idx);
+        if (count > 8) __builtin_prefetch(idx + count - 8);
+        __builtin_prefetch(c0);
+        __builtin_prefetch(c0 + 1);
+    } else {
+        IdxCache *c = c0[1].idx == idx ? c0 + 1 : c0[0].idx == idx ? c0 : NULL;
+        if (c && c->sg_state == 1 && c->sg_vl == (const void *)vl) {
+            const PortGSVertex *v = vl + c->mn;
+            __builtin_prefetch(v);
+            __builtin_prefetch(v + c->range / 2);
+            __builtin_prefetch(v + c->range - 1);
+        }
+    }
+}
+
 static int draw_indexed_range(int strips, const short *idx, u32 count, const PortGSVertex *vl, int constcol, u32 col) {
     if (g_rec_bypass) return 0; /* copied by the GX recorder: convert now, keep no pointer */
     const short *p = idx;

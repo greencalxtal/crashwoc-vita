@@ -439,6 +439,23 @@ static void rec_replay(int op, void *p) {
     }
 }
 
+/* GX thread: prefetch for the indexed draws a few records ahead of r (gx_gl.c
+ * idxc_prefetch): stage 2 for the next one, stage 1 for the one after it.
+ * CWOC_RECPF=0: off (A/B). */
+static int g_recpf = -1;
+static void rec_prefetch(u32 r, u32 w) {
+    int found = 0, k;
+    for (k = 0; k < 12 && r != w && found < 2; k++) {
+        const RecHdr *h = (const RecHdr *)(g_rec + r % REC_BYTES);
+        if (h->op == RECOP_DRAW_INDEXED) {
+            const RecDrawIndexed *d = (const RecDrawIndexed *)(h + 1);
+            if (!d->copied) idxc_prefetch(d->idx, d->count, d->verts, found ? 1 : 2);
+            found++;
+        }
+        r += (u32)sizeof(RecHdr) + h->size;
+    }
+}
+
 static int rec_thread(void *arg) {
     (void)arg;
     { extern void port_thread_register(const char *name); port_thread_register("gxrec"); }
@@ -463,8 +480,10 @@ static int rec_thread(void *arg) {
         }
         {
             uint64_t t0 = port_prof_now();
+            if (g_recpf < 0) g_recpf = !(getenv("CWOC_RECPF") && getenv("CWOC_RECPF")[0] == '0');
             while (r != w) {
                 RecHdr *h = (RecHdr *)(g_rec + r % REC_BYTES);
+                if (g_recpf && h->op == RECOP_DRAW_INDEXED) rec_prefetch(r + (u32)sizeof(RecHdr) + h->size, w);
                 if (h->op != 0) rec_replay(h->op, h + 1);
                 r += (u32)sizeof(RecHdr) + h->size;
                 __atomic_store_n(&g_rec_r, r, __ATOMIC_RELEASE);
