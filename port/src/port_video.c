@@ -7,6 +7,7 @@
 #ifdef PORT_VITA
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/threadmgr.h>
+#include <psp2/display.h>
 #endif
 #include <SDL2/SDL.h>
 #include <stdarg.h>
@@ -42,6 +43,23 @@ static struct {
  * <save dir>/display.txt; on the Vita SELECT + D-pad up cycles and saves it. */
 static int g_display_mode;
 static int g_win_w = 640, g_win_h = 448;
+#ifdef PORT_VITA
+/* vitaGL's display queue callback, once per frame put on screen: how many
+ * vblanks each frame stayed there (the 5 s perf lines). With the 30 fps lock
+ * every frame should stay 2; 1 and 3 are an uneven rhythm. */
+static volatile unsigned g_vb_hist[5];
+static unsigned g_vb_last;
+static void disp_cb(void *fb) {
+    unsigned v = (unsigned)sceDisplayGetVcount();
+    (void)fb;
+    if (g_vb_last) {
+        unsigned d = v - g_vb_last;
+        g_vb_hist[d > 4 ? 4 : d]++;
+    }
+    g_vb_last = v;
+}
+#endif
+
 static const char *const g_display_names[3] = { "4:3", "stretch", "wide" };
 
 float port_wide_factor(void) {
@@ -163,6 +181,7 @@ void port_platform_init(int argc, char **argv) {
         port_gpuprof_init(); /* GPU profiler build: observe GXM from its initialization */
 #endif
         vglInitExtended(0, w, h, 8 * 1024 * 1024, SCE_GXM_MULTISAMPLE_NONE); /* MSAA off: fill rate */
+        vglSetDisplayCallback(disp_cb);
         port_log("video: vitaGL init %.0f ms, shader cache %s", (port_prof_now() - t0) / 1000.0, path);
     }
     {
@@ -601,6 +620,13 @@ static void prof_report(int nf, uint64_t span) {
                 memset(g_xfsub_n, 0, sizeof(g_xfsub_n));
             }
         }
+#ifdef PORT_VITA
+        {
+            unsigned h[5], k;
+            for (k = 0; k < 5; k++) { h[k] = g_vb_hist[k]; g_vb_hist[k] = 0; }
+            port_log("video: frames on screen for 1/2/3/4+ vblanks: %u %u %u %u", h[0] + h[1], h[2], h[3], h[4]);
+        }
+#endif
         if (g_shc_n || g_shc_hit)
             port_log("shaders: %u compiled (vs %.1f ms, fs %.1f ms, link+lookups %.1f ms), %u from cache (%.1f ms)",
                      g_shc_n, g_shc_us[0] / 1000.0, g_shc_us[1] / 1000.0, g_shc_us[2] / 1000.0, g_shc_hit,
