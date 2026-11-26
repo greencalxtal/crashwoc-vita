@@ -88,8 +88,10 @@ the game: this project contains **no game files**.
 | Start > Options > Show FPS | Frames per second in the top-left corner on/off, in the game's font (saved) |
 
 The game's on-screen button prompts show the Vita buttons (cross, square,
-circle, triangle) instead of the GameCube ones. In widescreen the pause
-screen's frame covers the whole screen.
+circle, triangle) instead of the GameCube ones, and the power-up texts name
+the buttons that do each move on the Vita (Select for the GameCube Z, L and
+R for the triggers), in all six languages. In widescreen the pause screen's
+frame covers the whole screen.
 
 Saves: `ux0:data/crashwoc/save/`. Log: `ux0:data/crashwoc/crashwoc.log`.
 

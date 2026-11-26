@@ -27,10 +27,10 @@
  *   gx_gl.c). The flat L and R stay: the Vita's are called the same.
  *   CWOC_GCBUTTONS=1 keeps the GameCube glyphs.
  *
- * The log gets, once, the font's glyph list and the game's texts that can
- * show buttons (those with lowercase letters, and the first of each table;
- * every one with CWOC_TEXTDUMP=1), and the first strings where a button
- * glyph was replaced. */
+ *   The texts that name GameCube buttons in words ("Z BUTTON", "CONTROL
+ *   STICK", the triggers) are rewritten for the Vita in the six languages
+ *   (port_hud_init). The log gets the first strings where a button was
+ *   replaced. */
 
 extern void port_log(const char *fmt, ...);
 extern float port_wide_factor(void);
@@ -53,18 +53,11 @@ extern float PANEL3DMULX;
 extern float PANEL3DMULY;
 
 extern char *tPRESSxTOCONTINUE[6];
-extern char *tTCR_PRESSSTARTTORESUME[6];
-extern char *tSUPERBELLYFLOP[6];
 extern char *tSUPERBELLYFLOPTEXT[6][7];
-extern char *tDEATHTORNADOSPIN[6];
 extern char *tDEATHTORNADOSPINTEXT[6][7];
-extern char *tDOUBLEJUMP[6];
 extern char *tDOUBLEJUMPTEXT[6][7];
-extern char *tFRUITBAZOOKA[6];
 extern char *tFRUITBAZOOKATEXT[6][7];
-extern char *tSPEEDSHOES[6];
 extern char *tSPEEDSHOESTEXT[6][7];
-extern char *tSNEAKSHOES[6];
 extern char *tSNEAKSHOESTEXT[6][7];
 
 void DrawPanel(void);
@@ -313,77 +306,104 @@ static void log_text(const char *label, const char *s) {
     port_log("hud: %s \"%s\"", label, buf);
 }
 
-/* lowercase letters are what the text uses for button glyphs and icons */
-static int has_lower(const char *s) {
-    for (; s != NULL && *s; s++)
-        if (*s >= 'a' && *s <= 'z') return 1;
-    return 0;
-}
+/* ---------------------------------------------------------------- texts */
+/* The texts that name GameCube buttons, rewritten for the PS Vita, by what
+ * each button does in the port rather than by the letter the text uses (the
+ * languages disagree: the tornado spin is "B BUTTON" in English and button x
+ * in the other five, and the belly flop and the bazooka name b, leftovers of
+ * the Xbox texts). A lowercase a, b, x or y
+ * becomes the PS Vita button (cross, square, circle, triangle: see above);
+ * Z is SELECT; the L and R triggers are the L and R buttons; the control
+ * stick is the left stick. The game's own code page (CP850: \232 = U umlaut,
+ * \216 = A umlaut, \220 = E acute, \242 = O acute). Only applied when the
+ * original is the expected one (the GCBE7D disc). CWOC_GCBUTTONS=1: the
+ * original texts. */
+/* MoveCRASH (move.s): jump 0x40 = A, spin 0x80 = B (the tornado: B again),
+ * crouch 0x20 = X (the belly flop: X in the air), bazooka aim 0x04 = L and
+ * fire a new 0x20 or 0x08 = X or R, sprint 0x08 = R, tiptoe 0x01 = Z */
+#define FIRE "x"   /* fruit bazooka fire: X (circle), not B as the texts said */
+#define CROUCH "x" /* belly flop: X (circle), at the top of the jump */
+struct hud_text { char **slot; const char *label; const char *from, *to; };
+#define T1(t, l, f, n) { &t[l], #t "[" #l "]", f, n }
+#define T7(t, l, k, f, n) { &t[l][k], #t "[" #l "][" #k "]", f, n }
+static const struct hud_text k_texts[] = {
+    /* 0 English */
+    T1(tPRESSxTOCONTINUE, 0, "PRESS A BUTTON TO CONTINUE", "PRESS a TO CONTINUE"),
+    T7(tDOUBLEJUMPTEXT, 0, 1, "PRESS A BUTTON TO JUMP, AND THEN", "PRESS a TO JUMP, AND THEN"),
+    T7(tDOUBLEJUMPTEXT, 0, 2, "PRESS A BUTTON AGAIN AT THE", "PRESS a AGAIN AT THE"),
+    T7(tDEATHTORNADOSPINTEXT, 0, 2, "PRESS B BUTTON REPEATEDLY", "PRESS b REPEATEDLY"),
+    T7(tSUPERBELLYFLOPTEXT, 0, 2, "PRESS b AT THE", "PRESS " CROUCH " AT THE"),
+    T7(tFRUITBAZOOKATEXT, 0, 2, "THE GUN, AIM WITH THE +CONTROL", "THE GUN, AIM WITH THE"),
+    T7(tFRUITBAZOOKATEXT, 0, 3, "PAD OR CONTROL STICK,", "DIRECTIONAL BUTTONS OR LEFT STICK,"),
+    T7(tFRUITBAZOOKATEXT, 0, 4, "THEN PRESS b TO FIRE", "THEN PRESS " FIRE " TO FIRE"),
+    T7(tSNEAKSHOESTEXT, 0, 1, "CRATES HOLD Z BUTTON WHILE MOVING", "CRATES HOLD SELECT WHILE MOVING"),
+    /* 1 French */
+    T7(tDEATHTORNADOSPINTEXT, 1, 3, "PLUSIEURS FOIS SUR LA TOUCHE x", "PLUSIEURS FOIS SUR LA TOUCHE b"),
+    T7(tSUPERBELLYFLOPTEXT, 1, 2, "PUIS SUR LA TOUCHE b AU", "PUIS SUR LA TOUCHE " CROUCH " AU"),
+    T7(tFRUITBAZOOKATEXT, 1, 1, "LONGUEMENT LA GACHETTE G,", "LONGUEMENT LA TOUCHE L,"),
+    T7(tFRUITBAZOOKATEXT, 1, 2, "VISE A L'AIDE DU BOUTON", "VISE A L'AIDE DES TOUCHES"),
+    T7(tFRUITBAZOOKATEXT, 1, 3, "MULTIDIRECTIONNEL ET APPUIE", "DIRECTIONNELLES ET APPUIE"),
+    T7(tFRUITBAZOOKATEXT, 1, 4, "SUR LA TOUCHE b POUR TIRER", "SUR LA TOUCHE " FIRE " POUR TIRER"),
+    T7(tSPEEDSHOESTEXT, 1, 2, "G\266CHETTE DROIT ENFONC\220E", "R ENFONC\220E"),
+    T7(tSNEAKSHOESTEXT, 1, 1, "DES PIEDS MAINTIENS Z", "DES PIEDS MAINTIENS SELECT"),
+    /* 2 German */
+    T7(tDEATHTORNADOSPINTEXT, 2, 1, "x-TASTE UM SICH L\216NGER UND", "b-TASTE UM SICH L\216NGER UND"),
+    T7(tSUPERBELLYFLOPTEXT, 2, 2, "DEM SPRUNG, UND DIE b-TASTE", "DEM SPRUNG, UND DIE " CROUCH "-TASTE"),
+    T7(tFRUITBAZOOKATEXT, 2, 0, "DR\232CKEN UND HALTEN SIE DEN", "DR\232CKEN UND HALTEN SIE DIE"),
+    T7(tFRUITBAZOOKATEXT, 2, 1, "SCHALTER LINKS FEST, UM DAS GEWEHR", "L-TASTE FEST, UM DAS GEWEHR"),
+    T7(tFRUITBAZOOKATEXT, 2, 4, "DR\232CKEN SIE b, UM MIT FR\232CHTEN", "DR\232CKEN SIE " FIRE ", UM MIT FR\232CHTEN"),
+    T7(tSPEEDSHOESTEXT, 2, 1, "DEN SCHALTER RECHTS GEDR\232CKT", "DIE R-TASTE GEDR\232CKT"),
+    T7(tSNEAKSHOESTEXT, 2, 1, "ODER GEHENS DIE Z-TASTE", "ODER GEHENS DIE SELECT-TASTE"),
+    /* 3 Italian */
+    T7(tDEATHTORNADOSPINTEXT, 3, 3, "RIPETUTAMENTE IL TASTO x", "RIPETUTAMENTE IL TASTO b"),
+    T7(tSUPERBELLYFLOPTEXT, 3, 2, "QUINDI PREMI IL TASTO b NEL", "QUINDI PREMI IL TASTO " CROUCH " NEL"),
+    T7(tFRUITBAZOOKATEXT, 3, 2, "GRILLETTO SINISTRO PER SOLLEVARE", "TASTO L PER SOLLEVARE"),
+    T7(tFRUITBAZOOKATEXT, 3, 4, "TASTO DIREZIONALE E PREMI IL", "TASTI DIREZIONALI E PREMI IL"),
+    T7(tFRUITBAZOOKATEXT, 3, 5, "PULSANTE b PER SPARARE", "TASTO " FIRE " PER SPARARE"),
+    T7(tSPEEDSHOESTEXT, 3, 1, "TIENI PREMUTO L'AZIONATORE", "TIENI PREMUTO IL TASTO R"),
+    T7(tSPEEDSHOESTEXT, 3, 2, "DESTRO, DURANTE LA CORSA", "DURANTE LA CORSA"),
+    T7(tSNEAKSHOESTEXT, 3, 1, "TIENI PREMUTO IL TASTO Z", "TIENI PREMUTO IL TASTO SELECT"),
+    /* 4 Spanish (the bazooka's text lost its aim and fire lines: written anew) */
+    T7(tDEATHTORNADOSPINTEXT, 4, 4, "BOT\242N x REPETIDAMENTE", "BOT\242N b REPETIDAMENTE"),
+    T7(tSUPERBELLYFLOPTEXT, 4, 2, "Y, A CONTINUACI\242N PULSA b", "Y, A CONTINUACI\242N PULSA " CROUCH),
+    T7(tFRUITBAZOOKATEXT, 4, 1, "PULSADO EL DISPARADOR IZQUIERDO", "PULSADO EL BOT\242N L"),
+    T7(tFRUITBAZOOKATEXT, 4, 2, "PARA LEVANTAR EL MANDO DE", "PARA LEVANTAR EL ARMA, APUNTA"),
+    T7(tFRUITBAZOOKATEXT, 4, 3, "DIRECCI\242N Y, A CONTINUACI\242N", "CON LOS BOTONES DE DIRECCI\242N"),
+    T7(tFRUITBAZOOKATEXT, 4, 4, "BOT\242N b PARA DISPARAR", "Y PULSA " FIRE " PARA DISPARAR"),
+    T7(tSPEEDSHOESTEXT, 4, 1, "MANT\220N PULSADO EL DISPARADOR", "MANT\220N PULSADO EL BOT\242N R"),
+    T7(tSPEEDSHOESTEXT, 4, 2, "DERECHO MIENTRAS CORRES", "MIENTRAS CORRES"),
+    T7(tSNEAKSHOESTEXT, 4, 1, "MANT\220N PULSADO Z MIENTRAS", "MANT\220N PULSADO SELECT MIENTRAS"),
+    /* 5 Dutch */
+    T7(tDEATHTORNADOSPINTEXT, 5, 1, "x -TOETS OM LANGER EN SNELLER", "b -TOETS OM LANGER EN SNELLER"),
+    T7(tSUPERBELLYFLOPTEXT, 5, 3, "OP DE b -TOETS ALS JE HET", "OP DE " CROUCH " -TOETS ALS JE HET"),
+    T7(tFRUITBAZOOKATEXT, 5, 1, "HOUD JE DE TREKKER LINKS", "HOUD JE DE L-TOETS"),
+    T7(tFRUITBAZOOKATEXT, 5, 3, "RICHT JE D.M.V. DE NAVIGATIEPAD", "RICHT JE MET DE RICHTINGSTOETSEN"),
+    T7(tFRUITBAZOOKATEXT, 5, 4, "EN DRUK JE OP b OM TE VUREN", "EN DRUK JE OP " FIRE " OM TE VUREN"),
+    T7(tSPEEDSHOESTEXT, 5, 0, "HOUD DE TREKKER RECHTS INGEDRUKT", "HOUD DE R-TOETS INGEDRUKT"),
+    T7(tSNEAKSHOESTEXT, 5, 0, "HOUD DE Z-TOETS INGEDRUKT", "HOUD DE SELECT-TOETS INGEDRUKT"),
+};
 
-/* a power-up's name and description table (text.c: [6][7]); which index is
- * the language is not known for sure: the first row, and every entry with a
- * lowercase letter (all of them with CWOC_TEXTDUMP=1) */
-static void dump_power(const char *name, char *title[6], char *text[6][7], int all) {
-    int l, k;
-    char label[64];
-    for (l = 0; l < 6; l++) {
-        if (all || l == 0 || has_lower(title[l])) {
-            snprintf(label, sizeof(label), "%s[%d]", name, l);
-            log_text(label, title[l]);
-        }
-        for (k = 0; k < 7; k++) {
-            if (text[l][k] == NULL || text[l][k][0] == 0) continue;
-            if (!all && l != 0 && !has_lower(text[l][k])) continue;
-            snprintf(label, sizeof(label), "%sTEXT[%d][%d]", name, l, k);
-            log_text(label, text[l][k]);
+/* port_main.c, after the DOL data is in place: the texts for the PS Vita */
+void port_hud_init(void) {
+    unsigned i, n = 0;
+    if (!vita_buttons_on()) return;
+    for (i = 0; i < sizeof(k_texts) / sizeof(k_texts[0]); i++) {
+        const struct hud_text *t = &k_texts[i];
+        if (*t->slot != NULL && strcmp(*t->slot, t->from) == 0) {
+            *t->slot = (char *)t->to;
+            n++;
+        } else {
+            log_text(t->label, *t->slot);
+            port_log("hud: ^ not the expected text, kept");
         }
     }
-}
-
-/* once the font is loaded: its glyphs, and the texts that can show buttons */
-static void hud_dump_once(void) {
-    static int done;
-    char glyphs[128];
-    int i, n = 0, all = getenv("CWOC_TEXTDUMP") != NULL;
-    if (done || !font3d_initialised || font3d_scene == NULL) return;
-    done = 1;
-    for (i = 0; i < 62 && Font3DTab[i].ascii != 0; i++) {
-        char c = Font3DTab[i].ascii;
-        if (Font3DRemap[(u8)c] == -1) continue;
-        if (n < (int)sizeof(glyphs) - 1) glyphs[n++] = c;
-        if (c >= 'a' && c <= 'z') {
-            char label[64];
-            snprintf(label, sizeof(label), "font glyph '%c' (lowercase) is", c);
-            log_text(label, Font3DTab[i].name);
-        }
-    }
-    glyphs[n] = 0;
-    log_text("font glyphs:", glyphs);
-    port_log("hud: language %d", (int)Game.language);
-    for (i = 0; i < 6; i++) {
-        char label[48];
-        if (all || i == 0 || has_lower(tPRESSxTOCONTINUE[i])) {
-            snprintf(label, sizeof(label), "tPRESSxTOCONTINUE[%d]", i);
-            log_text(label, tPRESSxTOCONTINUE[i]);
-        }
-        if (all || i == 0 || has_lower(tTCR_PRESSSTARTTORESUME[i])) {
-            snprintf(label, sizeof(label), "tTCR_PRESSSTARTTORESUME[%d]", i);
-            log_text(label, tTCR_PRESSSTARTTORESUME[i]);
-        }
-    }
-    dump_power("tSUPERBELLYFLOP", tSUPERBELLYFLOP, tSUPERBELLYFLOPTEXT, all);
-    dump_power("tDEATHTORNADOSPIN", tDEATHTORNADOSPIN, tDEATHTORNADOSPINTEXT, all);
-    dump_power("tDOUBLEJUMP", tDOUBLEJUMP, tDOUBLEJUMPTEXT, all);
-    dump_power("tFRUITBAZOOKA", tFRUITBAZOOKA, tFRUITBAZOOKATEXT, all);
-    dump_power("tSPEEDSHOES", tSPEEDSHOES, tSPEEDSHOESTEXT, all);
-    dump_power("tSNEAKSHOES", tSNEAKSHOES, tSNEAKSHOESTEXT, all);
+    port_log("hud: %u of %u texts rewritten for the PS Vita buttons", n, (unsigned)(sizeof(k_texts) / sizeof(k_texts[0])));
 }
 
 /* ---------------------------------------------------------------- panel */
 void port_hook_DrawPanel(void) {
     float wf = port_wide_factor();
     int menu = Cursor.menu;
-    hud_dump_once();
     g_hud_depth = 0;
     g_text_cur = NULL;
     g_text_zr = 0.0f;

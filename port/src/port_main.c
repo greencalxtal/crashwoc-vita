@@ -135,6 +135,10 @@ int main(int argc, char **argv) {
     }
 #endif
     port_dol_data_init();
+    {
+        extern void port_hud_init(void); /* texts for the PS Vita buttons */
+        port_hud_init();
+    }
     port_platform_init(argc, argv);
     {
         extern void port_audio_init(void);
