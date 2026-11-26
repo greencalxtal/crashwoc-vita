@@ -81,9 +81,10 @@ tu propia copia del juego: este proyecto **no incluye archivos del juego**.
 | Stick izquierdo | Moverse |
 | X | A de GameCube (saltar) |
 | Cuadrado | B de GameCube (girar) |
-| Círculo / Triángulo | X / Y de GameCube |
+| Círculo | X de GameCube (agacharse, deslizarse) |
+| Triángulo | Z de GameCube (ir de puntillas, con las zapatillas sigilosas) |
 | L / R | L / R de GameCube |
-| Select | Z de GameCube |
+| Select | Y de GameCube (muestra los contadores del HUD mientras se mantiene) |
 | Start | Start / pausa |
 | Start > Opciones > Pantalla | Modo de pantalla: 4:3, estirado, panorámico (se guarda) |
 | Start > Opciones > FPS | 30 (30 constantes, cada frame dos vblanks en pantalla) o desbloqueados (hasta 60; se guarda) |
@@ -91,8 +92,8 @@ tu propia copia del juego: este proyecto **no incluye archivos del juego**.
 
 Los botones que aparecen en pantalla son los de la Vita (X, cuadrado,
 círculo, triángulo) en lugar de los de GameCube, y los textos de los poderes
-nombran el botón que hace cada movimiento en la Vita (Select por la Z de
-GameCube, L y R por los gatillos) en los seis idiomas. En panorámico el
+nombran el botón que hace cada movimiento en la Vita (triángulo para ir de
+puntillas, L y R por los gatillos) en los seis idiomas. En panorámico el
 marco del menú de pausa ocupa toda la pantalla. La vibración funciona en una
 PS TV con DualShock 3 o 4; la Vita portátil no tiene motor, así que allí la
 opción no aparece.

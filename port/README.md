@@ -137,7 +137,7 @@ Vita: install `crashwoc.vpk`, copy the disc's `files/` directory to
 `ux0:data/crashwoc/files/` and make sure `ur0:data/libshacccg.suprx` exists
 (vitaGL compiles shaders at runtime; extract it with ShaRKBrew). Log:
 `ux0:data/crashwoc/crashwoc.log`. Controls: Cross = A (jump), Square = B (spin),
-Circle = X, Triangle = Y, L/R, Select = Z, Start, left stick.
+Circle = X, Triangle = Z (tiptoe), Select = Y (shows the HUD counters), L/R, Start, left stick.
 
 ## Known issues / next steps
 

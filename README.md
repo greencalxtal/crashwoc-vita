@@ -79,9 +79,10 @@ the game: this project contains **no game files**.
 | Left stick | Move |
 | Cross | GameCube A (jump) |
 | Square | GameCube B (spin) |
-| Circle / Triangle | GameCube X / Y |
+| Circle | GameCube X (crouch, slide) |
+| Triangle | GameCube Z (tiptoe, with the sneak shoes) |
 | L / R | GameCube L / R |
-| Select | GameCube Z |
+| Select | GameCube Y (shows the HUD counters while held) |
 | Start | Start / pause |
 | Start > Options > Screen | Screen mode: 4:3, stretched, widescreen (saved) |
 | Start > Options > Frame rate | 30 FPS (an even 30, every frame shown for two vblanks) or unlocked (up to 60; saved) |
@@ -89,8 +90,8 @@ the game: this project contains **no game files**.
 
 The game's on-screen button prompts show the Vita buttons (cross, square,
 circle, triangle) instead of the GameCube ones, and the power-up texts name
-the buttons that do each move on the Vita (Select for the GameCube Z, L and
-R for the triggers), in all six languages. In widescreen the pause screen's
+the buttons that do each move on the Vita (triangle for the tiptoe, L and R
+for the triggers), in all six languages. In widescreen the pause screen's
 frame covers the whole screen. Vibration works on a PS TV with a DualShock 3
 or 4; the handheld Vita has no motor, so the option is hidden there.
 

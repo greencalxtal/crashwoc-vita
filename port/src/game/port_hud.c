@@ -23,8 +23,11 @@
  *   the usual depth; the font's lowercase entries are the same objects as the
  *   uppercase ones). The flat A, B, X and Y are not drawn: the render thread
  *   draws the PS Vita button the port maps that GameCube button to in their
- *   place (port_pad.c: A = cross, B = square, X = circle, Y = triangle;
- *   gx_gl.c). The flat L and R stay: the Vita's are called the same.
+ *   place (port_pad.c: A = cross, B = square, X = circle; gx_gl.c). The
+ *   flat Y becomes the triangle: no game text names Y (on Select in the
+ *   port, it only shows the HUD counters) and the rewritten texts write y
+ *   for the tiptoe (GameCube Z), which the port puts on Triangle. The flat
+ *   L and R stay: the Vita's are called the same.
  *   CWOC_GCBUTTONS=1 keeps the GameCube glyphs.
  *
  *   The texts that name GameCube buttons in words ("Z BUTTON", "CONTROL
@@ -313,7 +316,7 @@ static void log_text(const char *label, const char *s) {
  * in the other five, and the belly flop and the bazooka name b, leftovers of
  * the Xbox texts). A lowercase a, b, x or y
  * becomes the PS Vita button (cross, square, circle, triangle: see above);
- * Z is SELECT; the L and R triggers are the L and R buttons; the control
+ * Z (the tiptoe) is on Triangle, so it is written y; the L and R triggers are the L and R buttons; the control
  * stick is the left stick. The game's own code page (CP850: \232 = U umlaut,
  * \216 = A umlaut, \220 = E acute, \242 = O acute). Only applied when the
  * original is the expected one (the GCBE7D disc). CWOC_GCBUTTONS=1: the
@@ -323,6 +326,9 @@ static void log_text(const char *label, const char *s) {
  * fire a new 0x20 or 0x08 = X or R, sprint 0x08 = R, tiptoe 0x01 = Z */
 #define FIRE "x"   /* fruit bazooka fire: X (circle), not B as the texts said */
 #define CROUCH "x" /* belly flop: X (circle), at the top of the jump */
+/* tiptoe: GameCube Z, which the port puts on Triangle (port_pad.c): the y
+ * glyph, which is drawn as the triangle icon */
+#define TIPTOE "y"
 struct hud_text { char **slot; const char *label; const char *from, *to; };
 #define T1(t, l, f, n) { &t[l], #t "[" #l "]", f, n }
 #define T7(t, l, k, f, n) { &t[l][k], #t "[" #l "][" #k "]", f, n }
@@ -336,7 +342,7 @@ static const struct hud_text k_texts[] = {
     T7(tFRUITBAZOOKATEXT, 0, 2, "THE GUN, AIM WITH THE +CONTROL", "THE GUN, AIM WITH THE"),
     T7(tFRUITBAZOOKATEXT, 0, 3, "PAD OR CONTROL STICK,", "DIRECTIONAL BUTTONS OR LEFT STICK,"),
     T7(tFRUITBAZOOKATEXT, 0, 4, "THEN PRESS b TO FIRE", "THEN PRESS " FIRE " TO FIRE"),
-    T7(tSNEAKSHOESTEXT, 0, 1, "CRATES HOLD Z BUTTON WHILE MOVING", "CRATES HOLD SELECT WHILE MOVING"),
+    T7(tSNEAKSHOESTEXT, 0, 1, "CRATES HOLD Z BUTTON WHILE MOVING", "CRATES HOLD " TIPTOE " WHILE MOVING"),
     /* 1 French */
     T7(tDEATHTORNADOSPINTEXT, 1, 3, "PLUSIEURS FOIS SUR LA TOUCHE x", "PLUSIEURS FOIS SUR LA TOUCHE b"),
     T7(tSUPERBELLYFLOPTEXT, 1, 2, "PUIS SUR LA TOUCHE b AU", "PUIS SUR LA TOUCHE " CROUCH " AU"),
@@ -345,7 +351,7 @@ static const struct hud_text k_texts[] = {
     T7(tFRUITBAZOOKATEXT, 1, 3, "MULTIDIRECTIONNEL ET APPUIE", "DIRECTIONNELLES ET APPUIE"),
     T7(tFRUITBAZOOKATEXT, 1, 4, "SUR LA TOUCHE b POUR TIRER", "SUR LA TOUCHE " FIRE " POUR TIRER"),
     T7(tSPEEDSHOESTEXT, 1, 2, "G\266CHETTE DROIT ENFONC\220E", "R ENFONC\220E"),
-    T7(tSNEAKSHOESTEXT, 1, 1, "DES PIEDS MAINTIENS Z", "DES PIEDS MAINTIENS SELECT"),
+    T7(tSNEAKSHOESTEXT, 1, 1, "DES PIEDS MAINTIENS Z", "DES PIEDS MAINTIENS " TIPTOE),
     /* 2 German */
     T7(tDEATHTORNADOSPINTEXT, 2, 1, "x-TASTE UM SICH L\216NGER UND", "b-TASTE UM SICH L\216NGER UND"),
     T7(tSUPERBELLYFLOPTEXT, 2, 2, "DEM SPRUNG, UND DIE b-TASTE", "DEM SPRUNG, UND DIE " CROUCH "-TASTE"),
@@ -353,7 +359,7 @@ static const struct hud_text k_texts[] = {
     T7(tFRUITBAZOOKATEXT, 2, 1, "SCHALTER LINKS FEST, UM DAS GEWEHR", "L-TASTE FEST, UM DAS GEWEHR"),
     T7(tFRUITBAZOOKATEXT, 2, 4, "DR\232CKEN SIE b, UM MIT FR\232CHTEN", "DR\232CKEN SIE " FIRE ", UM MIT FR\232CHTEN"),
     T7(tSPEEDSHOESTEXT, 2, 1, "DEN SCHALTER RECHTS GEDR\232CKT", "DIE R-TASTE GEDR\232CKT"),
-    T7(tSNEAKSHOESTEXT, 2, 1, "ODER GEHENS DIE Z-TASTE", "ODER GEHENS DIE SELECT-TASTE"),
+    T7(tSNEAKSHOESTEXT, 2, 1, "ODER GEHENS DIE Z-TASTE", "ODER GEHENS DIE " TIPTOE "-TASTE"),
     /* 3 Italian */
     T7(tDEATHTORNADOSPINTEXT, 3, 3, "RIPETUTAMENTE IL TASTO x", "RIPETUTAMENTE IL TASTO b"),
     T7(tSUPERBELLYFLOPTEXT, 3, 2, "QUINDI PREMI IL TASTO b NEL", "QUINDI PREMI IL TASTO " CROUCH " NEL"),
@@ -362,7 +368,7 @@ static const struct hud_text k_texts[] = {
     T7(tFRUITBAZOOKATEXT, 3, 5, "PULSANTE b PER SPARARE", "TASTO " FIRE " PER SPARARE"),
     T7(tSPEEDSHOESTEXT, 3, 1, "TIENI PREMUTO L'AZIONATORE", "TIENI PREMUTO IL TASTO R"),
     T7(tSPEEDSHOESTEXT, 3, 2, "DESTRO, DURANTE LA CORSA", "DURANTE LA CORSA"),
-    T7(tSNEAKSHOESTEXT, 3, 1, "TIENI PREMUTO IL TASTO Z", "TIENI PREMUTO IL TASTO SELECT"),
+    T7(tSNEAKSHOESTEXT, 3, 1, "TIENI PREMUTO IL TASTO Z", "TIENI PREMUTO IL TASTO " TIPTOE),
     /* 4 Spanish (the bazooka's text lost its aim and fire lines: written anew) */
     T7(tDEATHTORNADOSPINTEXT, 4, 4, "BOT\242N x REPETIDAMENTE", "BOT\242N b REPETIDAMENTE"),
     T7(tSUPERBELLYFLOPTEXT, 4, 2, "Y, A CONTINUACI\242N PULSA b", "Y, A CONTINUACI\242N PULSA " CROUCH),
@@ -372,7 +378,7 @@ static const struct hud_text k_texts[] = {
     T7(tFRUITBAZOOKATEXT, 4, 4, "BOT\242N b PARA DISPARAR", "Y PULSA " FIRE " PARA DISPARAR"),
     T7(tSPEEDSHOESTEXT, 4, 1, "MANT\220N PULSADO EL DISPARADOR", "MANT\220N PULSADO EL BOT\242N R"),
     T7(tSPEEDSHOESTEXT, 4, 2, "DERECHO MIENTRAS CORRES", "MIENTRAS CORRES"),
-    T7(tSNEAKSHOESTEXT, 4, 1, "MANT\220N PULSADO Z MIENTRAS", "MANT\220N PULSADO SELECT MIENTRAS"),
+    T7(tSNEAKSHOESTEXT, 4, 1, "MANT\220N PULSADO Z MIENTRAS", "MANT\220N PULSADO " TIPTOE " MIENTRAS"),
     /* 5 Dutch */
     T7(tDEATHTORNADOSPINTEXT, 5, 1, "x -TOETS OM LANGER EN SNELLER", "b -TOETS OM LANGER EN SNELLER"),
     T7(tSUPERBELLYFLOPTEXT, 5, 3, "OP DE b -TOETS ALS JE HET", "OP DE " CROUCH " -TOETS ALS JE HET"),
@@ -380,7 +386,7 @@ static const struct hud_text k_texts[] = {
     T7(tFRUITBAZOOKATEXT, 5, 3, "RICHT JE D.M.V. DE NAVIGATIEPAD", "RICHT JE MET DE RICHTINGSTOETSEN"),
     T7(tFRUITBAZOOKATEXT, 5, 4, "EN DRUK JE OP b OM TE VUREN", "EN DRUK JE OP " FIRE " OM TE VUREN"),
     T7(tSPEEDSHOESTEXT, 5, 0, "HOUD DE TREKKER RECHTS INGEDRUKT", "HOUD DE R-TOETS INGEDRUKT"),
-    T7(tSNEAKSHOESTEXT, 5, 0, "HOUD DE Z-TOETS INGEDRUKT", "HOUD DE SELECT-TOETS INGEDRUKT"),
+    T7(tSNEAKSHOESTEXT, 5, 0, "HOUD DE Z-TOETS INGEDRUKT", "HOUD DE " TIPTOE " -TOETS INGEDRUKT"),
 };
 
 /* port_main.c, after the DOL data is in place: the texts for the PS Vita */

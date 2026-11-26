@@ -34,8 +34,9 @@ typedef struct {
 #define PAD_BUTTON_START 0x1000
 
 #ifdef PORT_VITA
-/* PS Vita: built-in controls. Cross=A, Circle=B, Square=X, Triangle=Y,
- * L/R = triggers, SELECT = Z, left stick = main stick, right stick = C stick. */
+/* PS Vita: built-in controls. Cross = A, Square = B, Circle = X,
+ * Triangle = Z, Select = Y, L/R = triggers, left stick = main stick, right
+ * stick = C stick (which the game never reads). */
 int port_frame_count(void);
 static void script_apply_fwd(PortPADStatus *s);
 
@@ -68,9 +69,12 @@ unsigned int PADRead(PortPADStatus *status) {
      * (XInputGetState + the padmap code), so B is the spin: put it on Square */
     if (c.buttons & SCE_CTRL_SQUARE) s->button |= PAD_BUTTON_B;
     if (c.buttons & SCE_CTRL_CIRCLE) s->button |= PAD_BUTTON_X;
-    if (c.buttons & SCE_CTRL_TRIANGLE) s->button |= PAD_BUTTON_Y;
+    /* Z is only the tiptoe (sneak shoes, held): on Triangle, under the thumb
+     * of the other moves. Y only shows the HUD counters while held (and is
+     * not used in menus): on Select */
+    if (c.buttons & SCE_CTRL_TRIANGLE) s->button |= PAD_TRIGGER_Z;
     if (c.buttons & SCE_CTRL_START) s->button |= PAD_BUTTON_START;
-    if (c.buttons & SCE_CTRL_SELECT) s->button |= PAD_TRIGGER_Z;
+    if (c.buttons & SCE_CTRL_SELECT) s->button |= PAD_BUTTON_Y;
     if (c.buttons & SCE_CTRL_LTRIGGER) { s->button |= PAD_TRIGGER_L; s->triggerL = 255; }
     if (c.buttons & SCE_CTRL_RTRIGGER) { s->button |= PAD_TRIGGER_R; s->triggerR = 255; }
     if (c.buttons & SCE_CTRL_UP) s->button |= PAD_BUTTON_UP;
