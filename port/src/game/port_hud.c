@@ -17,12 +17,14 @@
  *   what BigOutOf or DrawMenuEntry draw) are not moved again: g_hud_depth, and
  *   nurndr_forced_mtl_table, which Text3D sets while it draws its glyphs.
  *
- * - PS Vita buttons. The 3D font has flat glyphs for the controller buttons:
- *   lowercase a, b, x and y (Text3D gives exactly those, with w and n, a flat
- *   depth), which the GameCube text uses for its A, B, X and Y buttons ("PRESS
- *   a TO CONTINUE"). Those glyphs are not drawn: the render thread draws the
- *   PS Vita button the port maps that GameCube button to in their place
- *   (port_pad.c: A = cross, B = square, X = circle, Y = triangle; gx_gl.c).
+ * - PS Vita buttons. The game's texts write the controller buttons as
+ *   lowercase a, b, x, y, w and n ("APPUYER SUR a POUR CONTINUER"): Text3D
+ *   draws those as the uppercase letter A, B, X, Y, R or L, flat (a quarter of
+ *   the usual depth; the font's lowercase entries are the same objects as the
+ *   uppercase ones). The flat A, B, X and Y are not drawn: the render thread
+ *   draws the PS Vita button the port maps that GameCube button to in their
+ *   place (port_pad.c: A = cross, B = square, X = circle, Y = triangle;
+ *   gx_gl.c). The flat L and R stay: the Vita's are called the same.
  *   CWOC_GCBUTTONS=1 keeps the GameCube glyphs.
  *
  * The log gets, once, the font's glyph list and the game's texts that can
@@ -131,9 +133,22 @@ static int vita_buttons_on(void) {
     return on;
 }
 
-/* which GameCube button glyph of the font 'obj' is (-1: none) */
-static int button_of(const struct nuspecial_s *obj) {
+/* z / y scale of the text being drawn (Text3D / Text3D2 hooks; 0: not known) */
+static float g_text_zr;
+
+/* which GameCube button glyph Text3D is drawing (-1: none). The font's
+ * lowercase a, b, x, y entries are the same objects as the uppercase letters
+ * (Font3DTab names them "a", "b", "x", "y" too): a button is the letter drawn
+ * flat, a quarter of the depth Text3D gives every other glyph. So: flat, and
+ * then which letter. (w and n, the flat R and L, are the PS Vita's L and R
+ * too: they stay.) */
+static int button_of(const struct nuspecial_s *obj, float scaley, float scalez) {
+    /* a text drawn from native code (DrawMenuEntry: "PRESS a TO CONTINUE")
+     * does not go through the Text3D hook: the game's texts have z = y
+     * scale (1.2 at most), so a glyph is flat below 2 */
+    float zr = g_text_zr > 0.0f ? g_text_zr : 1.0f;
     int b;
+    if (scaley == 0.0f || fabsf(scalez / scaley) >= 2.0f * zr) return -1;
     for (b = 0; b < 4; b++) {
         int i = Font3DRemap[(u8)k_btn_char[b]];
         if (i >= 0 && i < 62 && Font3DTab[i].obj.special == obj) return b;
@@ -141,10 +156,12 @@ static int button_of(const struct nuspecial_s *obj) {
     return -1;
 }
 
+static float text_zr(float scaley, float scalez) { return scaley != 0.0f ? fabsf(scalez / scaley) : 0.0f; }
+
 static void log_text(const char *label, const char *s);
 
 /* the glyph Text3D was going to draw at (x, y, z), with its y scale sy
- * (FONT3DSIZE x the text's y scale): the icon at the same place, a third
+ * (FONT3DSIZE x the text's y scale): the icon at the same place, a fifth
  * taller than the text's line (font3d_dy), so the symbol reads at the Vita's
  * resolution (the glyph sits between spaces: there is room) */
 static void button_icon(int b, float x, float y, float z, float sy) {
@@ -154,7 +171,7 @@ static void button_icon(int b, float x, float y, float z, float sy) {
     const float t = 0.36397023f; /* tan(20 deg) */
     float aspect = 1.428571f * port_wide_factor();
     float scaley = FONT3DSIZE > 0.0f ? sy / FONT3DSIZE : sy;
-    float d = 0.1f * scaley * (FONT3DYMUL > 0.0f ? FONT3DYMUL : 1.0f) * 1.35f;
+    float d = 0.1f * scaley * (FONT3DYMUL > 0.0f ? FONT3DYMUL : 1.0f) * 1.2f;
     static int logged;
     if (z <= 0.01f) return;
     port_gx_icon(x * PANEL3DMULX / (z * t * aspect), y * PANEL3DMULY / (z * t), d * PANEL3DMULY / (z * t),
@@ -179,7 +196,7 @@ s32 port_hook_DrawPanel3DObject(s32 object, float x, float y, float z, float sca
     s32 r;
     int st;
     if (scn != NULL && scn == font3d_scene && obj != NULL && vita_buttons_on()) {
-        int b = button_of(obj);
+        int b = button_of(obj, scaley, scalez);
         if (b >= 0) {
             button_icon(b, x, y, z, scaley);
             return 1;
@@ -206,23 +223,29 @@ s32 port_hook_DrawPanel3DCharacter(s32 character, float x, float y, float z, flo
 void port_hook_Text3D(char *txt, float x, float y, float z, float scalex, float scaley, float scalez, s32 align,
                       s32 colour) {
     const char *prev = g_text_cur;
+    float prev_zr = g_text_zr;
     int st;
     g_text_cur = txt;
+    g_text_zr = text_zr(scaley, scalez);
     x = port_hud_enter(x, &st);
     Text3D(txt, x, y, z, scalex, scaley, scalez, align, colour);
     port_hud_leave(st);
     g_text_cur = prev;
+    g_text_zr = prev_zr;
 }
 
 void port_hook_Text3D2(char *txt, float x, float y, float z, float scalex, float scaley, float scalez, s32 align,
                        s32 colour) {
     const char *prev = g_text_cur;
+    float prev_zr = g_text_zr;
     int st;
     g_text_cur = txt;
+    g_text_zr = text_zr(scaley, scalez);
     x = port_hud_enter(x, &st);
     Text3D2(txt, x, y, z, scalex, scaley, scalez, align, colour);
     port_hud_leave(st);
     g_text_cur = prev;
+    g_text_zr = prev_zr;
 }
 
 void port_hook_BigOutOf(float x, float y, float scale, int value, int total) {
@@ -363,6 +386,7 @@ void port_hook_DrawPanel(void) {
     hud_dump_once();
     g_hud_depth = 0;
     g_text_cur = NULL;
+    g_text_zr = 0.0f;
     /* the pause screen's frame is up: DrawPanel draws it for these menus */
     g_hud_wf = (wf > 1.001f && wide_pause_wanted() && Paused != 0 && LDATA != NULL && (LDATA->flags & 1) != 0 &&
                 menu >= 5 && menu <= 10) ? wf : 1.0f;
