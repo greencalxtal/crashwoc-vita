@@ -808,6 +808,17 @@ static const char *shcache_dir(void) {
 #endif
 static int g_shcache = -1;
 
+/* render thread: the program cache is on (CWOC_SHCACHE); made on first use */
+static int shcache_on(void) {
+    if (g_shcache < 0) {
+        const char *s = getenv("CWOC_SHCACHE");
+        g_shcache = !(s && s[0] == '0');
+        if (g_shcache) mkdir(shcache_dir(), 0777);
+        port_log("gx: shader program cache %s (%s, vitaGL %s)", g_shcache ? "on" : "off", shcache_dir(), PORT_VITAGL_ID);
+    }
+    return g_shcache;
+}
+
 static unsigned long long fnv1a64(const char *s, unsigned long long h) {
     while (*s) {
         h ^= (unsigned char)*s++;
@@ -936,13 +947,7 @@ static void ensure_program(ShaderEntry *e) {
     if (e->prog) return;
     t0 = port_prof_now();
 #ifdef PORT_VITA
-    if (g_shcache < 0) {
-        const char *s = getenv("CWOC_SHCACHE");
-        g_shcache = !(s && s[0] == '0');
-        if (g_shcache) mkdir(shcache_dir(), 0777);
-        port_log("gx: shader program cache %s (%s, vitaGL %s)", g_shcache ? "on" : "off", shcache_dir(), PORT_VITAGL_ID);
-    }
-    if (g_shcache) {
+    if (shcache_on()) {
         shcache_path(cpath, sizeof(cpath), e);
         if (shcache_load(e, cpath)) {
             t2 = port_prof_now();
@@ -1042,6 +1047,18 @@ static GLuint exp_tex(void) {
     }
     return g_exp_tex;
 }
+/* bind_tex without the CWOC_GPUEXP=t substitution (the port's own textures) */
+static void bind_tex_raw(int unit, GLuint tex) {
+    if (g_active_unit != unit) {
+        glActiveTexture(GL_TEXTURE0 + unit);
+        g_active_unit = unit;
+    }
+    if (g_bound[unit] != tex) {
+        glBindTexture(GL_TEXTURE_2D, tex);
+        g_bound[unit] = tex;
+    }
+}
+
 static void bind_tex(int unit, GLuint tex) {
     if (g_gpuexp == 't' && tex) tex = exp_tex();
     if (g_active_unit != unit) {
@@ -3120,7 +3137,7 @@ int port_fps_overlay_on(void) {
     if (g_fps_overlay < 0) {
         char path[512];
         FILE *f;
-        int v = getenv("CWOC_FPS") && getenv("CWOC_FPS")[0] == '1';
+        int v = getenv("CWOC_FPS") && (getenv("CWOC_FPS")[0] == '1' || getenv("CWOC_FPS")[0] == '2');
         fps_overlay_path(path, sizeof(path));
         f = fopen(path, "r");
         if (f) {
@@ -3148,8 +3165,9 @@ void port_fps_overlay_toggle(void) {
     port_log("video: fps counter %s", g_fps_overlay ? "on" : "off");
 }
 
-/* game thread (port_hud.c): frames per second x 10, -1 before the first measure */
-int port_fps_x10(void) { return g_fps_x10; }
+/* game thread (port_hud.c): frames per second x 10, -1 before the first
+ * measure or with CWOC_FPS=2 (the plain counter draws it instead) */
+int port_fps_x10(void) { return g_fps_raw ? -1 : g_fps_x10; }
 
 /* render thread, at every present: the rate of presented frames over 0.5 s.
  * A present more than 1 s after the one before (a load) starts a new window,
@@ -3338,6 +3356,21 @@ static int icon_init(void) {
         "}\n";
     GLint ok = 0;
     u8 *px;
+    uint64_t t0 = port_prof_now();
+#ifdef PORT_VITA
+    /* through the program cache like the game's (a link is ~550 ms) */
+    static ShaderEntry ce;
+    char cpath[256];
+    ce.vsrc = (char *)vs;
+    ce.fsrc = (char *)fs;
+    if (shcache_on()) {
+        shcache_path(cpath, sizeof(cpath), &ce);
+        if (shcache_load(&ce, cpath)) {
+            g_icon_prog = ce.prog;
+            goto linked;
+        }
+    }
+#endif
     g_icon_prog = glCreateProgram();
     glAttachShader(g_icon_prog, compile(GL_VERTEX_SHADER, vs));
     glAttachShader(g_icon_prog, compile(GL_FRAGMENT_SHADER, fs));
@@ -3352,6 +3385,10 @@ static int icon_init(void) {
         port_log("gx: button icon program link failed: %s", log);
         return 0;
     }
+#ifdef PORT_VITA
+    if (g_shcache) shcache_save(g_icon_prog, cpath);
+linked:
+#endif
     glUseProgram(g_icon_prog);
     g_gl.prog = g_icon_prog;
     glUniform1i(glGetUniformLocation(g_icon_prog, "u_tex0"), 0);
@@ -3359,7 +3396,7 @@ static int icon_init(void) {
     if (!px) return 0;
     icon_atlas(px);
     glGenTextures(1, &g_icon_tex);
-    bind_tex(0, g_icon_tex);
+    bind_tex_raw(0, g_icon_tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 256, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
     free(px);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -3367,7 +3404,7 @@ static int icon_init(void) {
     glGenerateMipmap(GL_TEXTURE_2D);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    port_log("gx: PS Vita button icons ready");
+    port_log("gx: PS Vita button icons ready in %.0f ms", (port_prof_now() - t0) / 1000.0);
     return 1;
 }
 
@@ -3376,12 +3413,14 @@ static void rt_icons(int frame) {
     static GLVertex v[ICON_MAX * 6];
     int k = frame & (ICON_RING - 1), n, i;
     u8 sh;
+    if (!g_icon_state) { /* at the first present (the logos), not at the first icon */
+        g_gl.valid = 0;
+        g_icon_state = icon_init() ? 1 : -1;
+    }
     if (__atomic_load_n(&g_icon_ring[k].frame, __ATOMIC_ACQUIRE) != frame) return;
     n = g_icon_ring[k].n;
     if (n <= 0 || g_icon_state < 0) return;
     g_gl.valid = 0;
-    if (!g_icon_state) g_icon_state = icon_init() ? 1 : -1;
-    if (g_icon_state < 0) return;
     sh = (u8)(g_icon_ring[k].shade * 255.0f + 0.5f);
     memset(v, 0, sizeof(GLVertex) * (size_t)n * 6);
     for (i = 0; i < n; i++) {
@@ -3420,7 +3459,7 @@ static void rt_icons(int frame) {
         glUseProgram(g_icon_prog);
         g_gl.prog = g_icon_prog;
     }
-    bind_tex(0, g_icon_tex);
+    bind_tex_raw(0, g_icon_tex);
     /* client arrays, like the draws without the GPU ring */
     glBindBuffer(GL_ARRAY_BUFFER, 0);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
@@ -3598,7 +3637,7 @@ static void exec_cmds(int f, int from, int to) {
                 g_r3_late++;
             }
             rt_fps_tick();
-            if (g_fps_raw) rt_fps_overlay();
+            if (g_fps_raw && g_fps_overlay > 0) rt_fps_overlay();
             rt_icons(c->u.present.frame);
             t0 = port_prof_now();
             if (g_r3_frames >= 300) {
