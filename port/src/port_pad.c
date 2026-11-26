@@ -3,6 +3,9 @@
 #include "port.h"
 #ifdef PORT_VITA
 #include <psp2/ctrl.h>
+#ifdef PORT_VITA
+#include <psp2/kernel/sysmem.h>
+#endif
 #else
 #include <SDL2/SDL.h>
 #endif
@@ -222,9 +225,45 @@ unsigned int PADRead(PortPADStatus *status) {
 }
 #endif
 
+#ifdef PORT_VITA
+/* Rumble. The handheld Vita has no motor; a PS TV's DualShock 3 / 4 has
+ * two. The game turns the motor on and off (Game.vibration, creature.c: the
+ * GameCube's motor is on or off, RumbleController sends only the changes),
+ * here on the first paired DualShock (ports 1-4), at a fixed strength.
+ * port_vibration_supported() also hides the option on the handheld
+ * (port_hooks.c). */
+int port_vibration_supported(void) {
+    static int tv = -1;
+    if (tv < 0) {
+        tv = sceKernelIsPSVitaTV() > 0;
+        port_log("pad: %s", tv ? "PS TV: vibration on a DualShock" : "handheld: no vibration (option hidden)");
+    }
+    return tv;
+}
+
+static int dualshock_port(void) {
+    SceCtrlPortInfo pi;
+    int p;
+    if (sceCtrlGetControllerPortInfo(&pi) < 0) return -1;
+    for (p = 1; p < 5; p++)
+        if (pi.port[p] == SCE_CTRL_TYPE_DS3 || pi.port[p] == SCE_CTRL_TYPE_DS4) return p;
+    return -1;
+}
+#endif
+
 void PADControlMotor(int chan, unsigned int cmd) {
 #ifdef PORT_VITA
-    (void)chan; (void)cmd;
+    static int on, port = -1;
+    SceCtrlActuator a;
+    int want = cmd == 1;
+    if (chan != 0 || want == on || !port_vibration_supported()) return;
+    on = want;
+    if (on) port = dualshock_port(); /* the controller in use now; stop goes to the same one */
+    if (port < 0) return;
+    memset(&a, 0, sizeof(a));
+    a.small = on ? 0xc0 : 0;
+    a.large = on ? 0xc0 : 0;
+    sceCtrlSetActuator(port, &a);
 #else
     if (chan == 0 && g_ctrl) SDL_GameControllerRumble(g_ctrl, cmd == 1 ? 0xC000 : 0, cmd == 1 ? 0xC000 : 0, 100);
 #endif

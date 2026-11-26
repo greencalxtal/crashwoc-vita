@@ -93,7 +93,9 @@ Los botones que aparecen en pantalla son los de la Vita (X, cuadrado,
 círculo, triángulo) en lugar de los de GameCube, y los textos de los poderes
 nombran el botón que hace cada movimiento en la Vita (Select por la Z de
 GameCube, L y R por los gatillos) en los seis idiomas. En panorámico el
-marco del menú de pausa ocupa toda la pantalla.
+marco del menú de pausa ocupa toda la pantalla. La vibración funciona en una
+PS TV con DualShock 3 o 4; la Vita portátil no tiene motor, así que allí la
+opción no aparece.
 
 Partidas: `ux0:data/crashwoc/save/`. Log: `ux0:data/crashwoc/crashwoc.log`.
 

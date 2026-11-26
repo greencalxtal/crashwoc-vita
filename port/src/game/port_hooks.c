@@ -51,7 +51,11 @@ void *port_hook_LoadBuggyData(void *data, int indx) {
  * changes them (cross / D-pad right = next, D-pad left = previous): the
  * screen mode and the frame rate (30 fps or unlocked), saved in the save
  * directory (display.txt, framelock.txt) as before. A third
- * entry shows or hides the frames-per-second counter (fps.txt, gx_gl.c). */
+ * entry shows or hides the frames-per-second counter (fps.txt, gx_gl.c).
+ * The game's first entry, rumble, is hidden on the handheld Vita, which has
+ * no motor (a PS TV's DualShock has: port_pad.c): it is not drawn (the
+ * entries below move up half a line, the block stays centred) and the
+ * cursor skips it. */
 #define PORT_MENU_OPTIONS 6
 #define PORT_SFX_YES 0x36
 extern char *tDONE[6];
@@ -67,6 +71,12 @@ int port_pace_lock_on(void);
 void port_pace_lock_toggle(void);
 int port_fps_overlay_on(void);
 void port_fps_overlay_toggle(void);
+#ifdef PORT_VITA
+int port_vibration_supported(void); /* port_pad.c: a PS TV (DualShock), not the handheld */
+#else
+static int port_vibration_supported(void) { return 1; }
+#endif
+extern float MENUDY;
 void DrawMenuEntry(struct cursor_s *cursor, char *txt, float *x, float *y, s32 *i);
 void ProcMenu(struct cursor_s *cursor, struct nupad_s *pad);
 
@@ -108,6 +118,12 @@ void port_hook_DrawMenuEntry(struct cursor_s *cursor, char *txt, float *x, float
 
 static void menu_entry(struct cursor_s *cursor, char *txt, float *x, float *y, s32 *i) {
     port_hud_text(txt);
+    if (cursor->menu == PORT_MENU_OPTIONS && *i == 0 && !port_vibration_supported()) {
+        *y += MENUDY * 0.5f; /* as DrawMenuEntry would end, minus the line */
+        *i += 1;
+        dme_sx = 1.0f;
+        return;
+    }
     if (cursor->menu == PORT_MENU_OPTIONS && txt == tDONE[menu_lang()]) {
         static char line[3][64];
         int l = menu_lang(), m = port_display_mode();
@@ -141,6 +157,10 @@ void port_hook_ProcMenu(struct cursor_s *cursor, struct nupad_s *pad) {
     db = held & ~held_prev;
     held_prev = held;
     ProcMenu(cursor, pad);
+    /* the hidden rumble entry (handheld): never the cursor's; up from the
+     * first entry shown wraps to DONE like ProcMenu's own wrap */
+    if (cursor->menu == PORT_MENU_OPTIONS && cursor->y == 0 && !port_vibration_supported())
+        cursor->y = (menu0 == PORT_MENU_OPTIONS && y0 == 1) ? cursor->y_max : 1;
     /* act like ProcMenu would: same menu, cursor not moved this frame, no
      * button lock / wait / fade, and not on the frame the cursor arrived */
     if (menu0 != PORT_MENU_OPTIONS || cursor->menu != PORT_MENU_OPTIONS || cursor->y != y0 || pad == NULL)

@@ -210,7 +210,7 @@ if(PORT_VITA)
   target_link_options(crashwoc PRIVATE -Wl,--defsym,__sce_headroom=0x2000)
   target_link_libraries(crashwoc
     ${_vgl_link} vitashark SceShaccCgExt mathneon taihen_stub SceShaccCg_stub
-    SDL2 SceKernelDmacMgr_stub SceGxm_stub SceDisplay_stub SceCtrl_stub SceAppMgr_stub
+    SDL2 SceKernelDmacMgr_stub SceGxm_stub SceDisplay_stub SceCtrl_stub SceSysmem_stub SceAppMgr_stub
     SceAppUtil_stub SceSysmodule_stub SceCommonDialog_stub SceIme_stub SceAudio_stub
     SceAudioIn_stub SceTouch_stub SceHid_stub SceMotion_stub ScePower_stub SceProcessmgr_stub
     SceRtc_stub stdc++ pthread m c)

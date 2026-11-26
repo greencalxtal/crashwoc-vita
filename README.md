@@ -91,7 +91,8 @@ The game's on-screen button prompts show the Vita buttons (cross, square,
 circle, triangle) instead of the GameCube ones, and the power-up texts name
 the buttons that do each move on the Vita (Select for the GameCube Z, L and
 R for the triggers), in all six languages. In widescreen the pause screen's
-frame covers the whole screen.
+frame covers the whole screen. Vibration works on a PS TV with a DualShock 3
+or 4; the handheld Vita has no motor, so the option is hidden there.
 
 Saves: `ux0:data/crashwoc/save/`. Log: `ux0:data/crashwoc/crashwoc.log`.
 
