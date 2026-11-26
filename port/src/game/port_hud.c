@@ -274,7 +274,7 @@ static void fps_draw(void) {
     float x, y;
     if (!port_fps_overlay_on() || v < 0 || f == last_frame || PANEL3DMULX <= 0.0f || PANEL3DMULY <= 0.0f) return;
     last_frame = f;
-    snprintf(buf, 16, "%d.%d FPS", v / 10, v % 10);
+    snprintf(buf, 16, "%d.%d", v / 10, v % 10); /* the number alone, smaller than the HUD's text */
     if (Game.language == 0x63) AddSpacesIntoText(buf, 1);
     /* left-aligned near the top-left corner of the picture: the panel x, y
      * that the projection (button_icon) puts at 3.5 % / 8.5 % of the screen
@@ -284,7 +284,7 @@ static void fps_draw(void) {
     clamp = disable_safearea_clamp;
     disable_safearea_clamp = 1;
     g_hud_depth++; /* its glyphs are not moved by the wide pause layout */
-    Text3D(buf, x, y, 1.0f, 0.5f, 0.5f, 0.5f, 4, 0);
+    Text3D(buf, x, y, 1.0f, 0.35f, 0.35f, 0.35f, 4, 0);
     g_hud_depth--;
     disable_safearea_clamp = clamp;
 }
