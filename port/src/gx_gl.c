@@ -3098,13 +3098,18 @@ static void rt_transform(int f, int vend) {
     rt_gap(fr, vend);
 }
 
-/* Frames per second in the top-left corner (in 4:3 it sits in the black
- * band): pause menu > OPTIONS > SHOW FPS (port_hooks.c), saved in
- * <save dir>/fps.txt; CWOC_FPS=1 turns it on when there is no such file.
- * Drawn on the render thread just before the swap with scissored glClear
- * rectangles (a 3x5 font scaled 3x): no shader, texture or vertex data. The
- * rate is of frames actually presented, every 0.5 s. */
+/* Frames per second in the top-left corner: pause menu > OPTIONS > SHOW FPS
+ * (port_hooks.c), saved in <save dir>/fps.txt; CWOC_FPS=1 turns it on when
+ * there is no such file. The rate is of frames actually presented, measured
+ * here every 0.5 s (rt_fps_tick); the game thread draws it with the game's own
+ * 3D font in the HUD scene (port_hud.c), so it looks like the rest of the HUD.
+ * CWOC_FPS=2 (measurements): the plain counter instead, drawn here just
+ * before every swap (also on loads and movies, and in 4:3 in the black band)
+ * with scissored glClear rectangles (a 3x5 font scaled 3x): no shader,
+ * texture or vertex data. */
 static volatile int g_fps_overlay = -1;
+static int g_fps_raw;               /* CWOC_FPS=2 */
+static volatile int g_fps_x10 = -1; /* render thread -> game thread: the last rate x 10 */
 
 static void fps_overlay_path(char *buf, size_t n) {
     extern const char *port_save_dir(void);
@@ -3142,26 +3147,42 @@ void port_fps_overlay_toggle(void) {
     }
     port_log("video: fps counter %s", g_fps_overlay ? "on" : "off");
 }
+
+/* game thread (port_hud.c): frames per second x 10, -1 before the first measure */
+int port_fps_x10(void) { return g_fps_x10; }
+
+/* render thread, at every present: the rate of presented frames over 0.5 s.
+ * A present more than 1 s after the one before (a load) starts a new window,
+ * so the first number after a load is not the load's. */
+static void rt_fps_tick(void) {
+    static uint64_t t_last, t_prev;
+    static unsigned n;
+    uint64_t now = port_prof_now();
+    if (!t_last || now - t_prev > 1000000) {
+        t_last = t_prev = now;
+        n = 0;
+        return;
+    }
+    t_prev = now;
+    n++;
+    if (now - t_last >= 500000) {
+        g_fps_x10 = (int)(n * 1e7 / (double)(now - t_last) + 0.5);
+        t_last = now;
+        n = 0;
+    }
+}
+
 static void rt_fps_overlay(void) {
     /* 3x5 glyphs, rows top to bottom, 3 bits each (bit 2 = left column) */
     static const unsigned short glyph[11] = {
         075557, 026227, 071747, 071717, 055711, 074717, 074757, 071111, 075757, 075717, 000002, /* 0-9 . */
     };
-    static uint64_t t_last;
-    static unsigned n;
-    static char txt[8] = "";
+    char txt[16];
     const int px = 3, adv = 4 * px, x0 = 6, top = 6;
-    uint64_t now = port_prof_now();
-    int i, len, r, c;
-    n++;
-    if (!t_last) t_last = now;
-    if (now - t_last >= 500000) {
-        snprintf(txt, sizeof(txt), "%.1f", n * 1e6 / (double)(now - t_last));
-        t_last = now;
-        n = 0;
-    }
+    int i, len, r, c, v = g_fps_x10;
+    if (v < 0) return;
+    snprintf(txt, sizeof(txt), "%d.%d", v / 10, v % 10);
     len = (int)strlen(txt);
-    if (!len) return;
     g_gl.valid = 0;
     glViewport(0, 0, g_win_w, g_win_h);
     glEnable(GL_SCISSOR_TEST);
@@ -3186,6 +3207,234 @@ static void rt_fps_overlay(void) {
             }
         }
     }
+}
+
+/* ---- PS Vita button icons (port_hud.c) ----
+ * The game's 3D font has flat glyphs for the controller buttons (lowercase
+ * a, b, x, y: the GameCube A, B, X and Y). port_hud.c does not draw those
+ * glyphs and asks here for the PS Vita button in their place, at the same
+ * position and size: cross, square, circle and triangle, which is what the
+ * port maps A, B, X and Y to (port_pad.c). The icons of a frame are drawn by
+ * the render thread just before the swap, on top of everything: one textured
+ * quad each from a 256x64 atlas made at the first use (anti-aliased discs,
+ * alpha blended), with a small shader of their own. The game's fade (a
+ * multiply over the frame, DrawFade) darkens them through the vertex colour.
+ * Positions are in the EFB's normalised coordinates (x, y in -1..1, y up);
+ * d is the diameter in the same units, of the EFB height. */
+#define ICON_MAX 48
+#define ICON_RING 8
+typedef struct { float x, y, d; int icon; } IconReq;
+static struct { volatile int frame; int n; float shade; IconReq ic[ICON_MAX]; } g_icon_ring[ICON_RING];
+static IconReq g_icon_build[ICON_MAX]; /* game thread: icons of the frame being made */
+static int g_icon_nbuild;
+static float g_icon_shade = 1.0f;
+static GLuint g_icon_prog, g_icon_tex;
+static int g_icon_state; /* render thread: 0 not made yet, 1 ready, -1 failed */
+
+/* game thread */
+void port_gx_icon(float x, float y, float d, int icon) {
+    IconReq *r;
+    if (g_icon_nbuild >= ICON_MAX || icon < 0 || icon > 3 || !(d > 0.0f)) return;
+    r = &g_icon_build[g_icon_nbuild++];
+    r->x = x;
+    r->y = y;
+    r->d = d;
+    r->icon = icon;
+}
+
+/* game thread: the brightness the frame's fade leaves (1 = no fade) */
+void port_gx_icon_shade(float s) { g_icon_shade = s < 0.0f ? 0.0f : s > 1.0f ? 1.0f : s; }
+
+/* game thread, just before port_gx_present(frame): hand the frame's icons over */
+void port_gx_icons_commit(int frame) {
+    int k = frame & (ICON_RING - 1);
+    g_icon_ring[k].n = g_icon_nbuild;
+    g_icon_ring[k].shade = g_icon_shade;
+    if (g_icon_nbuild) memcpy(g_icon_ring[k].ic, g_icon_build, sizeof(IconReq) * (size_t)g_icon_nbuild);
+    __atomic_store_n(&g_icon_ring[k].frame, frame, __ATOMIC_RELEASE);
+    g_icon_nbuild = 0;
+    g_icon_shade = 1.0f;
+}
+
+/* the symbol of icon i at (dx, dy) pixels from the centre of its 64x64 cell (y down) */
+static int icon_symbol(int i, float dx, float dy) {
+    float u, v, m;
+    switch (i) {
+    case 0: /* cross */
+        u = (dx + dy) * 0.70710678f;
+        v = (dx - dy) * 0.70710678f;
+        return (fabsf(u) <= 3.1f && fabsf(v) <= 13.5f) || (fabsf(v) <= 3.1f && fabsf(u) <= 13.5f);
+    case 1: /* circle */
+        return fabsf(sqrtf(dx * dx + dy * dy) - 12.0f) <= 2.9f;
+    case 2: /* square */
+        m = fmaxf(fabsf(dx), fabsf(dy));
+        return m <= 11.5f && m >= 6.3f;
+    case 3: /* triangle, point up, centred on the cell */
+        dy -= 5.0f;
+        m = fmaxf(dy, fmaxf(-0.8660254f * dx - 0.5f * dy, 0.8660254f * dx - 0.5f * dy));
+        return m <= 10.0f && m >= 4.6f;
+    }
+    return 0;
+}
+
+/* 256x64 RGBA: cross, circle, square, triangle. A dark disc (radius 30 of the
+ * 64 pixel cell, lighter at the top) with a light rim and the coloured
+ * symbol, 4x4 samples per pixel */
+static void icon_atlas(u8 *px) {
+    static const u8 sym[4][3] = { { 0x8a, 0xbc, 0xf6 }, { 0xff, 0x6a, 0x6a }, { 0xf2, 0x92, 0xd8 }, { 0x46, 0xd8, 0xa8 } };
+    int i, x, y, sx, sy;
+    for (i = 0; i < 4; i++)
+        for (y = 0; y < 64; y++)
+            for (x = 0; x < 64; x++) {
+                float acc[3] = { 0, 0, 0 };
+                int n = 0;
+                u8 *p = px + ((size_t)y * 256 + (size_t)i * 64 + x) * 4;
+                for (sy = 0; sy < 4; sy++)
+                    for (sx = 0; sx < 4; sx++) {
+                        float dx = x + (sx + 0.5f) * 0.25f - 32.0f, dy = y + (sy + 0.5f) * 0.25f - 32.0f;
+                        float r = sqrtf(dx * dx + dy * dy), t;
+                        if (r > 30.0f) continue;
+                        n++;
+                        if (icon_symbol(i, dx, dy)) {
+                            acc[0] += sym[i][0]; acc[1] += sym[i][1]; acc[2] += sym[i][2];
+                        } else if (r > 27.4f) {
+                            acc[0] += 0xb8; acc[1] += 0xb8; acc[2] += 0xc2;
+                        } else {
+                            t = (dy + 30.0f) / 60.0f;
+                            acc[0] += 0x40 - t * 0x2a; acc[1] += 0x40 - t * 0x2a; acc[2] += 0x4a - t * 0x30;
+                        }
+                    }
+                if (n) {
+                    p[0] = (u8)(acc[0] / n + 0.5f);
+                    p[1] = (u8)(acc[1] / n + 0.5f);
+                    p[2] = (u8)(acc[2] / n + 0.5f);
+                } else {
+                    p[0] = p[1] = p[2] = 0;
+                }
+                p[3] = (u8)((n * 255 + 8) / 16);
+            }
+}
+
+static int icon_init(void) {
+    static const char *vs =
+        PORT_GLSL_HEADER
+        "attribute vec3 a_pos;\n"
+        "attribute vec4 a_clr;\n"
+        "attribute vec2 a_tex;\n"
+        "varying vec4 v_clr;\n"
+        "varying vec2 v_tex;\n"
+        "void main() {\n"
+        "  gl_Position = vec4(a_pos.xy, 0.0, 1.0);\n"
+        "  v_clr = a_clr;\n"
+        "  v_tex = a_tex;\n"
+        "}\n";
+    static const char *fs =
+        PORT_GLSL_HEADER
+        "uniform sampler2D u_tex0;\n"
+        "varying vec4 v_clr;\n"
+        "varying vec2 v_tex;\n"
+        "void main() {\n"
+        "  gl_FragColor = texture2D(u_tex0, v_tex) * v_clr;\n"
+        "}\n";
+    GLint ok = 0;
+    u8 *px;
+    g_icon_prog = glCreateProgram();
+    glAttachShader(g_icon_prog, compile(GL_VERTEX_SHADER, vs));
+    glAttachShader(g_icon_prog, compile(GL_FRAGMENT_SHADER, fs));
+    glBindAttribLocation(g_icon_prog, 0, "a_pos");
+    glBindAttribLocation(g_icon_prog, 2, "a_clr");
+    glBindAttribLocation(g_icon_prog, 3, "a_tex");
+    glLinkProgram(g_icon_prog);
+    glGetProgramiv(g_icon_prog, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        char log[1024];
+        glGetProgramInfoLog(g_icon_prog, sizeof(log), NULL, log);
+        port_log("gx: button icon program link failed: %s", log);
+        return 0;
+    }
+    glUseProgram(g_icon_prog);
+    g_gl.prog = g_icon_prog;
+    glUniform1i(glGetUniformLocation(g_icon_prog, "u_tex0"), 0);
+    px = malloc(256 * 64 * 4);
+    if (!px) return 0;
+    icon_atlas(px);
+    glGenTextures(1, &g_icon_tex);
+    bind_tex(0, g_icon_tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 256, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    free(px);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    port_log("gx: PS Vita button icons ready");
+    return 1;
+}
+
+/* render thread, before the swap of 'frame' */
+static void rt_icons(int frame) {
+    static GLVertex v[ICON_MAX * 6];
+    int k = frame & (ICON_RING - 1), n, i;
+    u8 sh;
+    if (__atomic_load_n(&g_icon_ring[k].frame, __ATOMIC_ACQUIRE) != frame) return;
+    n = g_icon_ring[k].n;
+    if (n <= 0 || g_icon_state < 0) return;
+    g_gl.valid = 0;
+    if (!g_icon_state) g_icon_state = icon_init() ? 1 : -1;
+    if (g_icon_state < 0) return;
+    sh = (u8)(g_icon_ring[k].shade * 255.0f + 0.5f);
+    memset(v, 0, sizeof(GLVertex) * (size_t)n * 6);
+    for (i = 0; i < n; i++) {
+        static const int corner[6] = { 0, 1, 2, 1, 3, 2 }; /* TL TR BL, TR BR BL */
+        const IconReq *r = &g_icon_ring[k].ic[i];
+        /* EFB coordinates -> window pixels (the drawable may be pillarboxed),
+         * then window NDC; the disc is 60 of the cell's 64 pixels */
+        float cx = g_off_x + (r->x * 0.5f + 0.5f) * g_draw_w;
+        float cy = g_off_y + (0.5f - r->y * 0.5f) * g_draw_h;
+        float h = r->d * 0.5f * g_draw_h * (64.0f / 60.0f) * 0.5f;
+        float x0 = (cx - h) / g_win_w * 2.0f - 1.0f, x1 = (cx + h) / g_win_w * 2.0f - 1.0f;
+        float y0 = 1.0f - (cy - h) / g_win_h * 2.0f, y1 = 1.0f - (cy + h) / g_win_h * 2.0f;
+        float u0 = r->icon * 0.25f, u1 = u0 + 0.25f;
+        int j;
+        for (j = 0; j < 6; j++) {
+            GLVertex *o = &v[i * 6 + j];
+            int cn = corner[j];
+            o->pos[0] = (cn & 1) ? x1 : x0;
+            o->pos[1] = (cn & 2) ? y1 : y0;
+            o->tex[0] = (cn & 1) ? u1 : u0;
+            o->tex[1] = (cn & 2) ? 1.0f : 0.0f;
+            o->clr[0] = o->clr[1] = o->clr[2] = sh;
+            o->clr[3] = 255;
+        }
+    }
+    glViewport(0, 0, g_win_w, g_win_h);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glDisable(GL_CULL_FACE);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glEnable(GL_BLEND);
+    glBlendEquation(GL_FUNC_ADD);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    if (g_gl.prog != g_icon_prog) {
+        glUseProgram(g_icon_prog);
+        g_gl.prog = g_icon_prog;
+    }
+    bind_tex(0, g_icon_tex);
+    /* client arrays, like the draws without the GPU ring */
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+    g_vb_mode = -1;
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+    glEnableVertexAttribArray(2);
+    glEnableVertexAttribArray(3);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(GLVertex), &v[0].pos);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(GLVertex), &v[0].nrm);
+    glVertexAttribPointer(2, 4, GL_UNSIGNED_BYTE, GL_TRUE, sizeof(GLVertex), &v[0].clr);
+    glVertexAttribPointer(3, 2, GL_FLOAT, GL_FALSE, sizeof(GLVertex), &v[0].tex);
+    glDrawArrays(GL_TRIANGLES, 0, n * 6);
+    g_draw_calls++;
 }
 
 #ifdef PORT_GPUPROF
@@ -3348,7 +3597,9 @@ static void exec_cmds(int f, int from, int to) {
                 g_gl.valid = 0;
                 g_r3_late++;
             }
-            if (g_fps_overlay > 0) rt_fps_overlay();
+            rt_fps_tick();
+            if (g_fps_raw) rt_fps_overlay();
+            rt_icons(c->u.present.frame);
             t0 = port_prof_now();
             if (g_r3_frames >= 300) {
                 port_log("gx: 3D at %d%%: %u frames, scaled up at the HUD %u, at the swap %u", g_res3d_pct_rt, g_r3_frames,
@@ -4900,7 +5151,8 @@ void port_gx_init(void) {
     }
 #endif
     g_gpuexp = getenv("CWOC_GPUEXP") ? getenv("CWOC_GPUEXP")[0] : 0;
-    port_fps_overlay_on(); /* load the setting before the render thread reads it */
+    port_fps_overlay_on(); /* load the setting before the HUD reads it */
+    g_fps_raw = getenv("CWOC_FPS") && getenv("CWOC_FPS")[0] == '2';
     {
         const char *e = getenv("CWOC_RES3D");
         g_res3d_dyn = !e || !e[0];

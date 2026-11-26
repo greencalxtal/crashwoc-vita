@@ -61,7 +61,9 @@ the identity outside the port).
      - plain `char` is **signed** (the ProDG compiler emitted `lbz`+`extsb`).
    * read-only float constants are inlined from the DOL.
    * `PPC2C_TRACE=Func1,Func2` + `CWOC_PPCTRACE=1` logs basic blocks (debugging).
-   * hooks (`HOOKS` in ppc2c, `src/game/port_hooks.c`) can skip the logos / intro.
+   * hooks (`HOOKS` in ppc2c, `src/game/port_hooks.c`) can skip the logos / intro;
+     `src/game/port_hud.c` hooks the HUD (fps counter in the game font, widescreen
+     pause screen, PS Vita button icons in place of the font's GameCube buttons).
 5. **GX → OpenGL** (`src/gx_gl.c`): FIFO decoding, TEV → generated GLSL,
    texture decoding, lighting channels. On Vita, vitaGL translates the GLSL.
 
@@ -112,7 +114,7 @@ Useful environment variables: `CWOC_SKIP_LOGOS=1`, `CWOC_INTRO=0` (skip the cut 
 `CWOC_WARP=level@frame` (request a level change), `CWOC_BATCHSTAT=1` (why GL
 batches break), `CWOC_IEEE=1` (PC: keep denormals),
 `CWOC_FIXEDTIME=1` (deterministic clock: 1/60 s per frame), `CWOC_AUDIO_DUMP=file.wav`, `CWOC_NOAUDIO=1`, `CWOC_DUMPSHADERS=<dir>`,
-`CWOC_MIPMAPS=0` (no mipmaps), `CWOC_FPS=1` (frames per second in the top-left corner when `<save dir>/fps.txt` does not exist; pause > OPTIONS > SHOW FPS), `CWOC_RES3D=<percent>` (the 3D of game frames always at that resolution, HUD native; unset: 85 % only while the GPU sets the frame rate; 0: native), `CWOC_LONGFRAME=ms` (log frames longer than ms, default 100,
+`CWOC_MIPMAPS=0` (no mipmaps), `CWOC_FPS=1` (frames per second in the top-left corner, in the game's 3D font, when `<save dir>/fps.txt` does not exist; pause > OPTIONS > SHOW FPS; `=2`: the plain counter drawn before every swap instead, also on loads and movies, for measurements), `CWOC_GCBUTTONS=1` (the font's GameCube button glyphs instead of the PS Vita button icons, `src/game/port_hud.c`), `CWOC_WIDEPAUSE=0` (widescreen: the pause screen's frame stays 4:3), `CWOC_TEXTDUMP=1` (log every entry of the button text tables, not only those with lowercase letters, which the game uses for button glyphs), `CWOC_RES3D=<percent>` (the 3D of game frames always at that resolution, HUD native; unset: 85 % only while the GPU sets the frame rate; 0: native), `CWOC_LONGFRAME=ms` (log frames longer than ms, default 100,
 with file-read time), `CWOC_CRELOG=1` (per-frame creature positions/AI state),
 `CWOC_DISPLAY=4:3|stretch|wide` + `CWOC_WINSIZE=960x544` (display mode; on the
 Vita pause > OPTIONS > SCREEN, saved in `<save dir>/display.txt`),

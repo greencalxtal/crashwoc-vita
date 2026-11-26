@@ -87,7 +87,11 @@ tu propia copia del juego: este proyecto **no incluye archivos del juego**.
 | Start | Start / pausa |
 | Start > Opciones > Pantalla | Modo de pantalla: 4:3, estirado, panorámico (se guarda) |
 | Start > Opciones > FPS estables | Bloqueo de frames on/off (ritmo más parejo, puede limitar los fps) |
-| Start > Opciones > Mostrar FPS | Fotogramas por segundo en la esquina superior izquierda on/off (se guarda) |
+| Start > Opciones > Mostrar FPS | Fotogramas por segundo en la esquina superior izquierda on/off, con la letra del juego (se guarda) |
+
+Los botones que aparecen en pantalla son los de la Vita (X, cuadrado,
+círculo, triángulo) en lugar de los de GameCube. En panorámico el marco del
+menú de pausa ocupa toda la pantalla.
 
 Partidas: `ux0:data/crashwoc/save/`. Log: `ux0:data/crashwoc/crashwoc.log`.
 

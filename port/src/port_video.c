@@ -655,6 +655,7 @@ void DEMOSwapBuffers(void) {
         if (crelog) port_log_creatures(g_frames);
         { extern void port_teleport(int frame); port_teleport(g_frames); }
     }
+    port_gx_icons_commit(g_frames);
     port_gx_present(g_frames);
     {
         extern void port_audio_frame(void);

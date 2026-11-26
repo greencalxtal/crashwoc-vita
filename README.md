@@ -85,7 +85,11 @@ the game: this project contains **no game files**.
 | Start | Start / pause |
 | Start > Options > Screen | Screen mode: 4:3, stretched, widescreen (saved) |
 | Start > Options > Steady FPS | Frame lock on/off (smoother pacing, may cap the frame rate) |
-| Start > Options > Show FPS | Frames per second in the top-left corner on/off (saved) |
+| Start > Options > Show FPS | Frames per second in the top-left corner on/off, in the game's font (saved) |
+
+The game's on-screen button prompts show the Vita buttons (cross, square,
+circle, triangle) instead of the GameCube ones. In widescreen the pause
+screen's frame covers the whole screen.
 
 Saves: `ux0:data/crashwoc/save/`. Log: `ux0:data/crashwoc/crashwoc.log`.
 

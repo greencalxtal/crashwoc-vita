@@ -86,7 +86,24 @@ static int menu_lang(void) {
     return (Game.language >= 0 && Game.language < 6) ? Game.language : 0;
 }
 
+/* widescreen pause screen: the menus move out with the stretched frame (port_hud.c) */
+float port_hud_enter(float x, int *st);
+void port_hud_leave(int st);
+void port_hud_text(const char *txt);
+static void menu_entry(struct cursor_s *cursor, char *txt, float *x, float *y, s32 *i);
+
 void port_hook_DrawMenuEntry(struct cursor_s *cursor, char *txt, float *x, float *y, s32 *i) {
+    float x0 = *x;
+    int st;
+    *x = port_hud_enter(x0, &st);
+    menu_entry(cursor, txt, x, y, i);
+    port_hud_leave(st);
+    *x = x0;
+    port_hud_text(NULL);
+}
+
+static void menu_entry(struct cursor_s *cursor, char *txt, float *x, float *y, s32 *i) {
+    port_hud_text(txt);
     if (cursor->menu == PORT_MENU_OPTIONS && txt == tDONE[menu_lang()]) {
         static char line[3][64];
         int l = menu_lang(), m = port_display_mode();
