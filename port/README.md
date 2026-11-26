@@ -120,7 +120,7 @@ with file-read time), `CWOC_CRELOG=1` (per-frame creature positions/AI state),
 `CWOC_DISPLAY=4:3|stretch|wide` + `CWOC_WINSIZE=960x544` (display mode; on the
 Vita pause > OPTIONS > SCREEN, saved in `<save dir>/display.txt`),
 `CWOC_TELEPORT=x,y,z@frame;bonus@frame` (move the player; `bonus` = the bonus round platform), `CWOC_BONUSLOG=1` (bonus/fall state), `CWOC_STRETCHLOG=1` (joint
-scale/extent of every skinned model drawn), `CWOC_NOPACE=1` (no frame pacing), `CWOC_PACESLEEP=1` (frame lock: hold frames to whole 1/60 s; Vita: pause > OPTIONS > STEADY FPS),
+scale/extent of every skinned model drawn), `CWOC_NOPACE=1` (no frame pacing), `CWOC_PACESLEEP=1` (30 fps lock when `<save dir>/framelock.txt` does not exist: the display queue shows every frame for two vblanks and the game runs 2 ticks a frame; Vita: pause > OPTIONS > FRAME RATE),
 `CWOC_PACELOG=1` (log the pacing per frame), `CWOC_NOFUSE=1` (original two-pass
 skinning), `CWOC_RTXF=0` (view transforms on the game thread), `CWOC_RTSKIN=0` (skinning on the game thread), `CWOC_RTCOPY=0` (indexed ranges and static skins converted on the game thread), `CWOC_IDXCACHE=0` (no index-list cache), `CWOC_GPURING=0` (Vita: vitaGL client arrays instead of the GPU vertex ring; PC `=1` tests the ring); build time: `PPC2C_FLOAT=0` (no single-precision shadows in ppc2c); the log prints `tb ms/frame:` (game phases), `CWOC_JUMPLOG=1`,
 `CWOC_DWALOG=1` (glitch hunting), `CWOC_SHOT_FROM=n` (screenshots from frame n).

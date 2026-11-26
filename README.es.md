@@ -19,8 +19,8 @@ tu propia copia del juego: este proyecto **no incluye archivos del juego**.
   vehículos (robot, carrito de mina, buggy, planeador...), partidas guardadas,
   música y sonido.
 - 30–60 fps según la zona. Las escenas cargadas (muchos enemigos, partículas,
-  vapor) pueden bajar de 30; **FPS estables** (pausa > Opciones) bloquea los fps para un ritmo
-  más parejo. Donde la GPU marca los fps, el 3D (no el HUD ni los menús) se
+  vapor) pueden bajar de 30; **FPS: 30** (pausa > Opciones) fija el
+  juego a 30 fps constantes. Donde la GPU marca los fps, el 3D (no el HUD ni los menús) se
   dibuja al 85 % de la resolución y se escala; **Mostrar FPS** (pausa >
   Opciones) enseña los fps.
 - *Crash Blast* (el minijuego de Game Boy Advance por cable link del menú
@@ -86,7 +86,7 @@ tu propia copia del juego: este proyecto **no incluye archivos del juego**.
 | Select | Z de GameCube |
 | Start | Start / pausa |
 | Start > Opciones > Pantalla | Modo de pantalla: 4:3, estirado, panorámico (se guarda) |
-| Start > Opciones > FPS estables | Bloqueo de frames on/off (ritmo más parejo, puede limitar los fps) |
+| Start > Opciones > FPS | 30 (30 constantes, cada frame dos vblanks en pantalla) o desbloqueados (hasta 60; se guarda) |
 | Start > Opciones > Mostrar FPS | Fotogramas por segundo en la esquina superior izquierda on/off, con la letra del juego (se guarda) |
 
 Los botones que aparecen en pantalla son los de la Vita (X, cuadrado,

@@ -43,13 +43,14 @@ void *port_hook_LoadBuggyData(void *data, int indx) {
     return end;
 }
 
-/* ---- Screen mode and frame lock in the pause menu's OPTIONS ----
+/* ---- Screen mode and frame rate in the pause menu's OPTIONS ----
  * They used to be SELECT + D-pad up/down, which clash with overlay plugins
  * (PSVshell). The options menu (menu 6: rumble, sound, [language], done) gets
  * two entries before DONE: GetMenuInfo (game.c) counts them, the translated
  * DrawMenu draws them through this DrawMenuEntry hook, and the ProcMenu hook
- * changes them (cross / D-pad right = next, D-pad left = previous). Both are
- * saved in the save directory (display.txt, framelock.txt) as before. A third
+ * changes them (cross / D-pad right = next, D-pad left = previous): the
+ * screen mode and the frame rate (30 fps or unlocked), saved in the save
+ * directory (display.txt, framelock.txt) as before. A third
  * entry shows or hides the frames-per-second counter (fps.txt, gx_gl.c). */
 #define PORT_MENU_OPTIONS 6
 #define PORT_SFX_YES 0x36
@@ -77,8 +78,11 @@ static const char *const k_mode[3][6] = {
     { "STRETCHED", "ETIRE", "GESTRECKT", "ALLUNGATO", "ESTIRADA", "UITGEREKT" },
     { "WIDESCREEN", "LARGE", "BREITBILD", "PANORAMICO", "PANORAMICA", "BREEDBEELD" },
 };
-static const char *const k_lock[6] = { "STEADY FPS", "FPS STABLES", "STABILE FPS", "FPS STABILI", "FPS ESTABLES",
-                                        "STABIELE FPS" };
+/* the frame rate: 30 fps (locked to every other vblank) or unlocked (port_os.c) */
+/* (no longer than the game's own option lines: they sit in the menu's panel) */
+static const char *const k_rate[6] = { "FRAME RATE", "FREQUENCE", "BILDRATE", "FRAME RATE", "FPS", "BEELDRATE" };
+static const char *const k_30[6] = { "30 FPS", "30 FPS", "30 FPS", "30 FPS", "30", "30 FPS" };
+static const char *const k_unlocked[6] = { "UNLOCKED", "LIBRE", "FREI", "LIBERO", "DESBLOQUEADOS", "VRIJ" };
 static const char *const k_fps[6] = { "SHOW FPS", "AFFICHER FPS", "FPS ANZEIGEN", "MOSTRA FPS", "MOSTRAR FPS",
                                       "FPS TONEN" };
 
@@ -112,7 +116,7 @@ static void menu_entry(struct cursor_s *cursor, char *txt, float *x, float *y, s
         float sx = dme_sx;
         if (m < 0 || m > 2) m = 0;
         snprintf(line[0], sizeof(line[0]), "%s: %s", k_screen[l], k_mode[m][l]);
-        snprintf(line[1], sizeof(line[1]), "%s: %s", k_lock[l], port_pace_lock_on() ? tON[l] : tOFF[l]);
+        snprintf(line[1], sizeof(line[1]), "%s: %s", k_rate[l], port_pace_lock_on() ? k_30[l] : k_unlocked[l]);
         snprintf(line[2], sizeof(line[2]), "%s: %s", k_fps[l], port_fps_overlay_on() ? tON[l] : tOFF[l]);
         dme_sx = sx;
         DrawMenuEntry(cursor, line[0], x, y, i);

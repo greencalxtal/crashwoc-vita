@@ -636,6 +636,16 @@ static void prof_report(int nf, uint64_t span) {
     }
 }
 
+/* frames per vblank of the display (1 = 60 Hz, 2 = the 30 fps lock;
+ * port_os.c). vitaGL's display queue waits that many vblanks per frame. */
+void port_video_swap_interval(int n) {
+#ifdef PORT_VITA
+    eglSwapInterval(0, n);
+#else
+    (void)n; /* PC: port_os.c sleeps instead */
+#endif
+}
+
 /* render thread (or inline): screenshot + swap */
 void port_video_present(int frame) {
     {

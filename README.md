@@ -18,8 +18,8 @@ the game: this project contains **no game files**.
 - The whole game can be played: hub, levels, bonus rounds, bosses, vehicles
   (mech, mine kart, buggy, glider...), saves, music and sound.
 - 30–60 fps depending on the area. Busy scenes (lots of enemies, particles,
-  steam) can drop below 30; **Steady FPS** (pause > Options) locks the frame rate for
-  steadier pacing. Where the GPU sets the frame rate, the 3D (not the HUD or
+  steam) can drop below 30; **Frame rate: 30 FPS** (pause > Options) locks the
+  game to an even 30 fps. Where the GPU sets the frame rate, the 3D (not the HUD or
   menus) is drawn at 85 % of the resolution and scaled up; **Show FPS**
   (pause > Options) shows the frame rate.
 - *Crash Blast* (the Game Boy Advance link-cable minigame in the main menu)
@@ -84,7 +84,7 @@ the game: this project contains **no game files**.
 | Select | GameCube Z |
 | Start | Start / pause |
 | Start > Options > Screen | Screen mode: 4:3, stretched, widescreen (saved) |
-| Start > Options > Steady FPS | Frame lock on/off (smoother pacing, may cap the frame rate) |
+| Start > Options > Frame rate | 30 FPS (an even 30, every frame shown for two vblanks) or unlocked (up to 60; saved) |
 | Start > Options > Show FPS | Frames per second in the top-left corner on/off, in the game's font (saved) |
 
 The game's on-screen button prompts show the Vita buttons (cross, square,
